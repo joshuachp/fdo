@@ -5,12 +5,6 @@ set -exEuo pipefail
 # Trap -e errors
 trap 'echo "Exit status $? at line $LINENO from: $BASH_COMMAND"' ERR
 
-pushd ./go-fdo-server
-
-$CONTAINER build -t go-fdo-server:latest .
-
-popd
-
 mkdir -p "$FDODIR"/{certs,db,files}
 
 # Manufacturer key (DER format)
