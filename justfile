@@ -41,6 +41,9 @@ data-info:
 basic-onboarding:
     ./scripts/basic-onboarding.sh
 
+client:
+    cd client && cargo run 
+
 clean:
     -$CONTAINER stop fdo-rendezvous
     -$CONTAINER stop fdo-manufacturer

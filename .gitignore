@@ -2,3 +2,4 @@
 /.tmp/
 /go-fdo-server/
 /go-fdo-client/
+target/
