@@ -1,14 +1,17 @@
 use eyre::{OptionExt, WrapErr, eyre};
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use url::Url;
 
 use crate::protocol::latest::Msgtype;
 use crate::protocol::latest::error::ErrorMessage;
-use crate::{ClientMessage, MESSAGE_TYPE, MIME, Message, PROTOCOL_VERSION};
+use crate::protocol::v101::{ClientMessage, Message, PROTOCOL_VERSION, Protver};
+
+const MIME: HeaderValue = HeaderValue::from_static("application/cbor");
+const MESSAGE_TYPE: HeaderName = HeaderName::from_static("message-type");
 
 pub(crate) struct Client {
     base_url: Url,
-    protocol_version: u8,
+    protocol_version: Protver,
     client: reqwest::Client,
 }
 

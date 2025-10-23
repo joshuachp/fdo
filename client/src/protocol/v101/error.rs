@@ -2,9 +2,7 @@ use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Message;
-
-use super::Msgtype;
+use super::{Message, Msgtype};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ErrorMessage<'a> {

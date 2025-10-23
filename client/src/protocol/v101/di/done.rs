@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::Message;
-use crate::protocol::v101::Msgtype;
+use crate::protocol::v101::{Message, Msgtype};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Done;

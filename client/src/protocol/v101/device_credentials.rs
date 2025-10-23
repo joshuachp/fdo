@@ -1,5 +1,7 @@
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
-use serde_bytes::ByteBuf;
+use serde_bytes::Bytes;
 
 use super::Protver;
 use super::guid::Guid;
@@ -25,7 +27,7 @@ use super::randezvous_info::RendezvousInfo;
 ///
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct DeviceCredential {
+pub(crate) struct DeviceCredential<'a> {
     /// Indicates whether FIDO Device Onboard is active.
     ///
     /// When a device is manufactured, this field is initialized to True, indicating that FIDO
@@ -41,12 +43,12 @@ pub(crate) struct DeviceCredential {
     /// initialization.
     ///
     /// Requires confidentiality.
-    pub(crate) dc_hmac_secret: ByteBuf,
+    pub(crate) dc_hmac_secret: Cow<'a, Bytes>,
     /// Device information.
     ///
     /// Is a text string that is used by the manufacturer to indicate the device type, sufficient to
     /// allow an onboarding procedure or script to be selected by the Owner.
-    pub(crate) dc_device_info: String,
+    pub(crate) dc_device_info: Cow<'a, str>,
     /// Current device’s GUID.
     ///
     /// To be used for the next ownership transfer.
@@ -60,5 +62,5 @@ pub(crate) struct DeviceCredential {
     /// Is a hash of the manufacturer’s public key, which must match the hash of OwnershipVoucher.OVHeader.OVPubKey
     ///
     /// Modified in TO2
-    pub(crate) dc_pub_key_hash: Hash<'static>,
+    pub(crate) dc_pub_key_hash: Hash<'a>,
 }

@@ -1,14 +1,11 @@
 use eyre::eyre;
-use reqwest::header::{HeaderName, HeaderValue};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use self::protocol::Ctx;
+use self::client::Client;
 use self::protocol::di::Di;
 use self::protocol::v101::di::custom::MfgInfo;
-use self::protocol::v101::{Msgtype, Protver};
+use self::storage::FileStorage;
 
 mod client;
 mod crypto;
@@ -18,21 +15,6 @@ mod storage;
 const MANUFACTORER_URL: &str = "http://127.0.0.1:8038";
 
 const MAC: &str = "e626207f-5fcc-456e-b1bc-250c9c8efb47";
-
-const MIME: HeaderValue = HeaderValue::from_static("application/cbor");
-const MESSAGE_TYPE: HeaderName = HeaderName::from_static("message-type");
-
-const PROTOCOL_VERSION_MAJOR: Protver = 1;
-const PROTOCOL_VERSION_MINOR: Protver = 1;
-const PROTOCOL_VERSION: Protver = PROTOCOL_VERSION_MAJOR * 100 + PROTOCOL_VERSION_MINOR;
-
-trait Message: Serialize + DeserializeOwned {
-    const MSG_TYPE: Msgtype;
-}
-
-trait ClientMessage: Message {
-    type Response<'a>: Message;
-}
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -53,13 +35,17 @@ async fn main() -> eyre::Result<()> {
 
     let base_url = url::Url::parse(MANUFACTORER_URL)?;
 
-    let mut crypto = crypto::software::SoftwareCrypto::create()?;
+    let storage = FileStorage::open("/tmp/fdo-starte".into()).await?;
 
-    let device_info = MfgInfo::generate(&mut crypto, MAC, "fdo-astarte")?;
+    let mut crypto = crypto::software::SoftwareCrypto::create(storage.clone()).await?;
 
-    let ctx = Ctx::create(base_url, crypto)?;
+    let client = Client::new(base_url)?;
 
-    Di::start(ctx, device_info).await?;
+    let device_info = MfgInfo::generate(&mut crypto, MAC, "fdo-astarte").await?;
+
+    let di = Di::new(client, crypto, storage);
+
+    let _done = di.run(device_info).await?;
 
     Ok(())
 }

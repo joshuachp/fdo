@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::CborBstr;
-use crate::protocol::v101::Msgtype;
-use crate::{ClientMessage, Message};
+use crate::protocol::v101::{ClientMessage, Message, Msgtype};
 
 use super::set_credentials::SetCredentials;
 

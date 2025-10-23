@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::Message;
 use crate::protocol::CborBstr;
-use crate::protocol::v101::Msgtype;
 use crate::protocol::v101::ownership_voucher::OvHeader;
+use crate::protocol::v101::{Message, Msgtype};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SetCredentials<'a> {

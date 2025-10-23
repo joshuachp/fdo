@@ -5,10 +5,13 @@ edition = "2024"
 
 [dependencies]
 aws-lc-rs = "1.14.1"
+base64 = "0.22.1"
 chrono = { version = "0.4.42", features = ["serde"] }
 ciborium = "0.2.2"
 color-eyre = "0.6.5"
+coset = { version = "0.4.0", features = ["std"] }
 eyre = "0.6.12"
+nix = { version = "0.30.1", features = ["ioctl"] }
 rcgen = { version = "0.14.5", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 reqwest = { version = "0.12.24", default-features = false, features = ["charset", "http2", "system-proxy", "rustls-tls-manual-roots-no-provider"] }
 rustls = { version = "0.23.33", default-features = false, features = ["aws-lc-rs", "logging", "prefer-post-quantum", "read_buf", "std", "tls12"] }

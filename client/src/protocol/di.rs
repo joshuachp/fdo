@@ -1,78 +1,81 @@
+use coset::{CborSerializable, CoseEncrypt0};
 use eyre::OptionExt;
 use reqwest::header::{AUTHORIZATION, HeaderValue};
+use serde_bytes::ByteBuf;
 use tracing::info;
 
 use crate::client::Client;
 use crate::crypto::Crypto;
+use crate::protocol::v101::PROTOCOL_VERSION;
 use crate::protocol::v101::device_credentials::DeviceCredential;
 use crate::protocol::v101::di::done::Done;
 use crate::protocol::v101::di::set_hmac::SetHmac;
+use crate::storage::Storage;
 
-use super::Ctx;
 use super::v101::di::app_start::AppStart;
 use super::v101::di::custom::MfgInfo;
 use super::v101::di::set_credentials::SetCredentials;
 use super::v101::hash_hmac::{HMac, Hash};
 
-pub(crate) enum Di<'a> {
-    AppStart(DiStart<'a>),
-    SetCredentials(DiSetCredentials),
-    SetHmac(DiSetHmac),
+pub(crate) struct Di<C, S, T> {
+    client: Client,
+    crypto: C,
+    storage: S,
+    state: T,
 }
 
-impl<'a> Di<'a> {
-    pub(crate) async fn start<C>(mut ctx: Ctx<C>, device_info: MfgInfo<'a>) -> eyre::Result<()>
-    where
-        C: Crypto,
-    {
-        let mut state = Self::AppStart(DiStart {
-            device_info: AppStart::new(device_info),
-        });
-
-        state.next(&mut ctx).await?;
-        state.next(&mut ctx).await?;
-        state.next(&mut ctx).await?;
-
-        Ok(())
-    }
-
-    async fn next<C>(&mut self, ctx: &mut Ctx<C>) -> eyre::Result<()>
-    where
-        C: Crypto,
-    {
-        match self {
-            Di::AppStart(di_app_start) => {
-                let (auth, creds) = di_app_start.run(ctx).await?;
-
-                let state = DiSetCredentials::new(auth, creds);
-
-                *self = Di::SetCredentials(state);
-            }
-            Di::SetCredentials(set_creds) => {
-                let hmac = set_creds.run(ctx).await?;
-
-                // TODO: improve the new state
-                *self = Di::SetHmac(DiSetHmac::new(set_creds.auth.clone(), hmac));
-            }
-            Di::SetHmac(di_set_hmac) => {
-                di_set_hmac.run(ctx).await?;
-            }
+impl<C, S> Di<C, S, ()> {
+    pub(crate) fn new(client: Client, crypto: C, storage: S) -> Self {
+        Self {
+            client,
+            crypto,
+            storage,
+            state: (),
         }
+    }
 
-        Ok(())
+    pub(crate) async fn run<'a>(self, device_info: MfgInfo<'a>) -> eyre::Result<Di<C, S, Done>>
+    where
+        C: Crypto,
+        S: Storage,
+    {
+        let state = Start {
+            device_info: AppStart::new(device_info),
+        };
+
+        let init = Di::from((self, state));
+
+        let set_creds = init.run().await?;
+
+        let set_hmac = set_creds.run().await?;
+
+        let done = set_hmac.run().await?;
+
+        Ok(done)
     }
 }
 
-pub(crate) struct DiStart<'a> {
+impl<'a, C, S> From<(Di<C, S, ()>, Start<'a>)> for Di<C, S, Start<'a>> {
+    fn from((di, start): (Di<C, S, ()>, Start<'a>)) -> Self {
+        Self {
+            client: di.client,
+            crypto: di.crypto,
+            storage: di.storage,
+            state: start,
+        }
+    }
+}
+
+pub(crate) struct Start<'a> {
     device_info: AppStart<MfgInfo<'a>>,
 }
 
-impl DiStart<'_> {
-    async fn run<C>(&self, ctx: &mut Ctx<C>) -> eyre::Result<(HeaderValue, SetCredentials<'static>)>
+impl<'a, C, S> Di<C, S, Start<'a>> {
+    async fn run(self) -> eyre::Result<Di<C, S, Credentials>>
     where
         C: Crypto,
     {
-        let res = ctx.client.send(&self.device_info, None).await?;
+        let res = self.client.send(&self.state.device_info, None).await?;
 
         let auth = res
             .headers()
@@ -84,105 +87,162 @@ impl DiStart<'_> {
 
         info!("DI.AppStart successful");
 
-        Ok((auth, set_creds))
+        Ok(Di::from((
+            self,
+            Credentials {
+                auth,
+                creds: set_creds,
+                buf: Vec::new(),
+            },
+        )))
     }
 }
 
-pub(crate) struct DiSetCredentials {
+impl<'a, C, S> From<(Di<C, S, Start<'a>>, Credentials)> for Di<C, S, Credentials> {
+    fn from((di, state): (Di<C, S, Start<'a>>, Credentials)) -> Self {
+        Self {
+            client: di.client,
+            crypto: di.crypto,
+            storage: di.storage,
+            state,
+        }
+    }
+}
+
+pub(crate) struct Credentials {
     auth: HeaderValue,
     creds: SetCredentials<'static>,
     buf: Vec<u8>,
 }
 
-impl DiSetCredentials {
-    fn new(auth: HeaderValue, creds: SetCredentials<'static>) -> Self {
-        Self {
-            auth,
-            creds,
-            buf: Vec::new(),
-        }
-    }
-
-    async fn run<C>(&mut self, ctx: &mut Ctx<C>) -> eyre::Result<HMac<'static>>
+impl<C, S> Di<C, S, Credentials> {
+    async fn run(mut self) -> eyre::Result<Di<C, S, Hmac>>
     where
         C: Crypto,
     {
-        let ov_header = self.creds.ov_header();
+        let hash = self.owner_key_hash()?;
+
+        let hmac_secret = self.crypto.hmac_secret().await?;
+
+        let hmac = self.ov_header_hmac(&hmac_secret).await?;
+
+        let ov_header = self.state.creds.ov_header();
 
         info!(guid = %ov_header.ov_guid);
 
-        // XXX: store this hash in device credentials
-        let hash = self.owner_key_hash(ctx)?;
-
-        let secret = ctx.crypto.secret();
-
         let device_creds = DeviceCredential {
             dc_active: true,
-            dc_prot_ver: crate::PROTOCOL_VERSION,
-            dc_hmac_secret: todo!(),
-            dc_device_info: todo!(),
-            dc_guid: todo!(),
-            dc_rv_info: todo!(),
-            dc_pub_key_hash: todo!(),
+            dc_prot_ver: PROTOCOL_VERSION,
+            dc_hmac_secret: std::borrow::Cow::Owned(ByteBuf::from(hmac_secret.to_vec()?)),
+            dc_device_info: ov_header.ov_device_info.clone(),
+            dc_guid: ov_header.ov_guid,
+            dc_rv_info: ov_header.ov_rv_info.clone(),
+            dc_pub_key_hash: hash,
         };
-
-        let hmac = self.ov_header_hmac(ctx)?;
 
         info!("DI.SetCredentials successful");
 
-        Ok(hmac)
+        Ok(Di::from((self, (SetHmac { hmac }, device_creds))))
     }
 
-    fn owner_key_hash<C>(&mut self, ctx: &mut Ctx<C>) -> Result<Hash<'static>, eyre::Error>
+    fn owner_key_hash(&mut self) -> Result<Hash<'static>, eyre::Error>
     where
         C: Crypto,
     {
-        self.buf.clear();
+        self.state.buf.clear();
 
-        ciborium::into_writer(&self.creds.ov_header().ov_pub_key, &mut self.buf)?;
+        ciborium::into_writer(
+            &self.state.creds.ov_header().ov_pub_key,
+            &mut self.state.buf,
+        )?;
 
-        let dc_pub_key_hash = ctx.crypto.hash(&self.buf)?;
+        let dc_pub_key_hash = self.crypto.hash(&self.state.buf)?;
 
         Ok(dc_pub_key_hash)
     }
 
-    fn ov_header_hmac<C>(&mut self, ctx: &mut Ctx<C>) -> Result<HMac<'static>, eyre::Error>
+    async fn ov_header_hmac(
+        &mut self,
+        hmac_secret: &CoseEncrypt0,
+    ) -> Result<HMac<'static>, eyre::Error>
     where
         C: Crypto,
     {
-        self.buf.clear();
+        self.state.buf.clear();
 
-        ciborium::into_writer(&self.creds.ov_header().ov_pub_key, &mut self.buf)?;
+        ciborium::into_writer(
+            &self.state.creds.ov_header().ov_pub_key,
+            &mut self.state.buf,
+        )?;
 
-        let hmac = ctx.crypto.hmac(&self.buf)?;
+        let hmac = self.crypto.hmac(hmac_secret, &self.state.buf).await?;
 
         Ok(hmac)
     }
 }
 
-pub(crate) struct DiSetHmac {
-    auth: HeaderValue,
-    hmac: SetHmac<'static>,
+impl<C, S>
+    From<(
+        Di<C, S, Credentials>,
+        (SetHmac<'static>, DeviceCredential<'static>),
+    )> for Di<C, S, Hmac>
+{
+    fn from(
+        (di, (hmac, creds)): (
+            Di<C, S, Credentials>,
+            (SetHmac<'static>, DeviceCredential<'static>),
+        ),
+    ) -> Self {
+        Self {
+            client: di.client,
+            crypto: di.crypto,
+            storage: di.storage,
+            state: Hmac {
+                auth: di.state.auth,
+                hmac,
+                device_creds: creds,
+            },
+        }
+    }
 }
 
-impl DiSetHmac {
-    async fn run<C>(&self, ctx: &mut Ctx<C>) -> eyre::Result<()>
+pub(crate) struct Hmac {
+    auth: HeaderValue,
+    hmac: SetHmac<'static>,
+    device_creds: DeviceCredential<'static>,
+}
+
+impl<C, S> Di<C, S, Hmac> {
+    async fn run(self) -> eyre::Result<Di<C, S, Done>>
     where
-        C: Crypto,
+        S: Storage,
     {
-        let Done {} = ctx.client.send_msg(&self.hmac, &self.auth).await?;
+        let Done {} = self
+            .client
+            .send_msg(&self.state.hmac, &self.state.auth)
+            .await?;
 
         info!("DI.SetMac sucessfully");
 
+        // TODO: store credentials
+        let mut buf = Vec::new();
+        ciborium::into_writer(&self.state.device_creds, &mut buf)?;
+
+        self.storage.write("device_creds.cbor", &buf).await?;
+
         info!("DI.Done sucessfully");
 
-        Ok(())
+        Ok(Di::from((self, Done)))
     }
+}
 
-    fn new(auth: HeaderValue, hmac: Hash<'static>) -> Self {
+impl<C, S> From<(Di<C, S, Hmac>, Done)> for Di<C, S, Done> {
+    fn from((di, state): (Di<C, S, Hmac>, Done)) -> Self {
         Self {
-            auth,
-            hmac: SetHmac { hmac },
+            client: di.client,
+            crypto: di.crypto,
+            storage: di.storage,
+            state,
         }
     }
 }

@@ -3,32 +3,11 @@ use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
 use serde_bytes::{ByteBuf, Bytes};
-use url::Url;
-
-use crate::client::Client;
 
 pub(crate) use self::v101 as latest;
 pub(crate) mod v101;
 
 pub(crate) mod di;
-
-// TODO:
-//   - error handling
-//   - back off
-//   - single step retry
-//   - full retry
-pub(crate) struct Ctx<C> {
-    client: Client,
-    crypto: C,
-}
-
-impl<C> Ctx<C> {
-    pub(crate) fn create(base_url: Url, crypto: C) -> eyre::Result<Self> {
-        let client = Client::new(base_url)?;
-
-        Ok(Self { client, crypto })
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct CborBstr<T> {

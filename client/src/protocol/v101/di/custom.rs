@@ -40,7 +40,7 @@ pub(crate) struct MfgInfo<'a> {
 }
 
 impl<'a> MfgInfo<'a> {
-    pub(crate) fn generate<C>(
+    pub(crate) async fn generate<C>(
         crypto: &mut C,
         serial_no: &'a str,
         model_no: &'a str,
@@ -48,7 +48,7 @@ impl<'a> MfgInfo<'a> {
     where
         C: Crypto,
     {
-        let csr = crypto.csr(model_no)?;
+        let csr = crypto.csr(model_no).await?;
 
         Ok(Self {
             pk_type: crypto.pk_type(),
