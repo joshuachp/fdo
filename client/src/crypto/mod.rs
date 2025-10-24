@@ -4,6 +4,8 @@ use crate::protocol::v101::hash_hmac::{HMac, Hash};
 use crate::protocol::v101::public_key::{PkEnc, PkType};
 
 pub(crate) mod software;
+#[cfg(feature = "tpm")]
+pub(crate) mod tpm;
 
 pub(crate) trait Crypto {
     /// Public key encoding

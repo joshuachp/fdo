@@ -6,7 +6,7 @@ use crate::protocol::CborBstr;
 
 use super::Protver;
 use super::guid::Guid;
-use super::hash_hmac::Hash;
+use super::hash_hmac::HMac;
 use super::public_key::PublicKey;
 use super::randezvous_info::RendezvousInfo;
 
@@ -25,6 +25,52 @@ use super::randezvous_info::RendezvousInfo;
 pub(crate) struct OwnershipVoucher<'a> {
     ov_prot_ver: Protver,
     ov_header_tag: CborBstr<OvHeader<'a>>,
+    ov_header_hmac: HMac<'a>,
+    ov_dev_cert_chain: OvDevCertChainHashOrNull<'a>,
+    // TODO change
+    ov_entry_array: ciborium::Value,
+}
+
+impl Serialize for OwnershipVoucher<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let Self {
+            ov_prot_ver,
+            ov_header_tag,
+            ov_header_hmac,
+            ov_dev_cert_chain,
+            ov_entry_array,
+        } = self;
+
+        (
+            ov_prot_ver,
+            ov_header_tag,
+            ov_header_hmac,
+            ov_dev_cert_chain,
+            ov_entry_array,
+        )
+            .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for OwnershipVoucher<'_> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let (ov_prot_ver, ov_header_tag, ov_header_hmac, ov_dev_cert_chain, ov_entry_array) =
+            Deserialize::deserialize(deserializer)?;
+
+        Ok(Self {
+            ov_prot_ver,
+            ov_header_tag,
+            ov_header_hmac,
+            ov_dev_cert_chain,
+            ov_entry_array,
+        })
+    }
 }
 
 /// ;; Ownership Voucher header, also used in TO1 protocol
@@ -94,7 +140,8 @@ impl<'de> Deserialize<'de> for OvHeader<'_> {
 // ;; Device certificate chain
 // ;; use null for Intel® EPID.
 // OVDevCertChainOrNull     = X5CHAIN / null  ;; CBOR null for Intel® EPID device key
-pub(crate) type OvDevCertChainHashOrNull<'a> = Option<Hash<'a>>;
+// TODO: not specified
+pub(crate) type OvDevCertChainHashOrNull<'a> = Option<ciborium::Value>;
 
 //;; Hash of Device certificate chain
 //;; use null for Intel® EPID

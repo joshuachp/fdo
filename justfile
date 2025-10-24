@@ -42,10 +42,20 @@ basic-onboarding:
     ./scripts/basic-onboarding.sh
 
 client:
-    cd client && cargo run 
+    cd client && cargo run -- plain-fs
+
+launch-vm:
+    ./scripts/vish-launch.sh
+
+run-on-vm:
+    ./scripts/run-on-vm.sh
+
+build-tpm2-tss:
+    ./scripts/build-tpm2-tss.sh
 
 clean:
     -$CONTAINER stop fdo-rendezvous
     -$CONTAINER stop fdo-manufacturer
     -$CONTAINER stop fdo-owner
+    -./scripts/vish-destroy.sh
     -rm -rf ./.tmp
