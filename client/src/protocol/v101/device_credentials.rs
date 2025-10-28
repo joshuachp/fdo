@@ -3,10 +3,9 @@ use std::borrow::Cow;
 use serde::{Deserialize, Serialize};
 use serde_bytes::Bytes;
 
-use super::Protver;
-use super::guid::Guid;
 use super::hash_hmac::Hash;
 use super::randezvous_info::RendezvousInfo;
+use super::{Guid, Protver};
 
 /// Persisted device credentials after DI.
 ///
@@ -58,7 +57,7 @@ pub(crate) struct DeviceCredential<'a> {
     /// Contains instructions on how to find the Secure Device Onboard Rendezvous Server.
     ///
     /// Modified in TO2
-    pub(crate) dc_rv_info: RendezvousInfo,
+    pub(crate) dc_rv_info: RendezvousInfo<'a>,
     /// Is a hash of the manufacturer’s public key, which must match the hash of OwnershipVoucher.OVHeader.OVPubKey
     ///
     /// Modified in TO2

@@ -34,6 +34,19 @@ impl<'de> Deserialize<'de> for SetHmac<'_> {
 
 impl Message for SetHmac<'_> {
     const MSG_TYPE: Msgtype = 12;
+
+    fn decode(buf: &[u8]) -> eyre::Result<Self> {
+        let this = ciborium::from_reader(buf)?;
+
+        Ok(this)
+    }
+
+    fn encode(&self) -> eyre::Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        ciborium::into_writer(self, &mut buf)?;
+
+        Ok(buf)
+    }
 }
 
 impl ClientMessage for SetHmac<'_> {

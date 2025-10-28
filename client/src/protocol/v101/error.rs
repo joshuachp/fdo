@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 
@@ -7,7 +8,6 @@ use super::{Message, Msgtype};
 #[derive(Debug, Clone)]
 pub(crate) struct ErrorMessage<'a> {
     // Error code
-    // TODO: error codes are well defined
     e_m_error_code: u16,
     // Message ID (type) of the previous message
     e_m_prev_msg_id: u8,
@@ -17,6 +17,42 @@ pub(crate) struct ErrorMessage<'a> {
     e_m_error_ts: ciborium::Value,
     // Unique id associated with this request
     e_m_error_c_i_d: Option<u64>,
+}
+
+impl<'a> ErrorMessage<'a> {
+    pub(crate) fn known_code(&self) -> Option<ErrorCode> {
+        let code = match self.e_m_error_code {
+            001 => ErrorCode::InvalidJwtToken,
+            002 => ErrorCode::InvalidOwnershipVoucher,
+            003 => ErrorCode::InvalidOwnerSignBody,
+            004 => ErrorCode::InvalidIpAddress,
+            005 => ErrorCode::InvalidGuid,
+            006 => ErrorCode::ResourceNotFound,
+            100 => ErrorCode::MessageBodyError,
+            101 => ErrorCode::InvalidMessageError,
+            102 => ErrorCode::CredReuseError,
+            500 => ErrorCode::InternalServerError,
+            _ => return None,
+        };
+
+        Some(code)
+    }
+}
+
+impl Display for ErrorMessage<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(code) = self.known_code() {
+            write!(f, "error_code: {code}")?;
+        } else {
+            write!(f, "error_code: {}", self.e_m_error_code)?;
+        }
+
+        write!(
+            f,
+            ", prev_msg_id : {}, error_str: {:?}, error_ts: {:?}, c_i_d: {:?}",
+            self.e_m_prev_msg_id, self.e_m_error_str, self.e_m_error_ts, self.e_m_error_c_i_d
+        )
+    }
 }
 
 impl Serialize for ErrorMessage<'_> {
@@ -63,4 +99,50 @@ impl<'de> Deserialize<'de> for ErrorMessage<'_> {
 
 impl Message for ErrorMessage<'_> {
     const MSG_TYPE: Msgtype = 255;
+
+    fn decode(buf: &[u8]) -> eyre::Result<Self> {
+        let this = ciborium::from_reader(buf)?;
+
+        Ok(this)
+    }
+
+    fn encode(&self) -> eyre::Result<Vec<u8>> {
+        let mut buf = Vec::new();
+
+        ciborium::into_writer(self, &mut buf)?;
+
+        Ok(buf)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u16)]
+pub(crate) enum ErrorCode {
+    InvalidJwtToken = 1,
+    InvalidOwnershipVoucher = 2,
+    InvalidOwnerSignBody = 3,
+    InvalidIpAddress = 4,
+    InvalidGuid = 5,
+    ResourceNotFound = 6,
+    MessageBodyError = 100,
+    InvalidMessageError = 101,
+    CredReuseError = 102,
+    InternalServerError = 500,
+}
+
+impl Display for ErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ErrorCode::InvalidJwtToken => write!(f, "INVALID_JWT_TOKEN"),
+            ErrorCode::InvalidOwnershipVoucher => write!(f, "INVALID_OWNERSHIP_VOUCHER"),
+            ErrorCode::InvalidOwnerSignBody => write!(f, "INVALID_OWNER_SIGN_BODY"),
+            ErrorCode::InvalidIpAddress => write!(f, "INVALID_IP_ADDRESS"),
+            ErrorCode::InvalidGuid => write!(f, "INVALID_GUID"),
+            ErrorCode::ResourceNotFound => write!(f, "RESOURCE_NOT_FOUND"),
+            ErrorCode::MessageBodyError => write!(f, "MESSAGE_BODY_ERROR"),
+            ErrorCode::InvalidMessageError => write!(f, "INVALID_MESSAGE_ERROR"),
+            ErrorCode::CredReuseError => write!(f, "CRED_REUSE_ERROR"),
+            ErrorCode::InternalServerError => write!(f, "INTERNAL_SERVER_ERROR"),
+        }
+    }
 }

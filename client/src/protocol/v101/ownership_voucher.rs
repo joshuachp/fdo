@@ -4,11 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::protocol::CborBstr;
 
-use super::Protver;
-use super::guid::Guid;
 use super::hash_hmac::HMac;
 use super::public_key::PublicKey;
 use super::randezvous_info::RendezvousInfo;
+use super::{Guid, Protver};
 
 /// Ownership Voucher top level structure
 ///
@@ -86,7 +85,7 @@ impl<'de> Deserialize<'de> for OwnershipVoucher<'_> {
 pub(crate) struct OvHeader<'a> {
     pub(crate) ovh_prot_ver: Protver,
     pub(crate) ov_guid: Guid,
-    pub(crate) ov_rv_info: RendezvousInfo,
+    pub(crate) ov_rv_info: RendezvousInfo<'a>,
     pub(crate) ov_device_info: Cow<'a, str>,
     pub(crate) ov_pub_key: PublicKey<'a>,
     pub(crate) ov_dev_cert_chain_hash: OvDevCertChainHashOrNull<'a>,

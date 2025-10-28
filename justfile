@@ -41,8 +41,11 @@ data-info:
 basic-onboarding:
     ./scripts/basic-onboarding.sh
 
-client:
-    cd client && cargo run -- plain-fs
+client args:
+    cd client && cargo run -- plain-fs {{ args }}
+
+send-to0 guid:
+    ./scripts/send-to0.sh "{{ guid }}"
 
 launch-vm:
     ./scripts/vish-launch.sh
@@ -59,3 +62,4 @@ clean:
     -$CONTAINER stop fdo-owner
     -./scripts/vish-destroy.sh
     -rm -rf ./.tmp
+    -rm -rf /tmp/fdo-astarte/

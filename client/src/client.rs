@@ -1,42 +1,28 @@
 use eyre::{OptionExt, WrapErr, eyre};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use tracing::debug;
 use url::Url;
 
 use crate::protocol::latest::Msgtype;
 use crate::protocol::latest::error::ErrorMessage;
-use crate::protocol::v101::{ClientMessage, Message, PROTOCOL_VERSION, Protver};
+use crate::protocol::v101::{ClientMessage, IntialMessage, Message, PROTOCOL_VERSION, Protver};
 
 const MIME: HeaderValue = HeaderValue::from_static("application/cbor");
 const MESSAGE_TYPE: HeaderName = HeaderName::from_static("message-type");
 
-pub(crate) struct Client {
+#[derive(Debug)]
+pub(crate) struct NeedsAuth {}
+
+#[derive(Debug)]
+pub(crate) struct Client<A = HeaderValue> {
+    auth: A,
     base_url: Url,
     protocol_version: Protver,
     client: reqwest::Client,
 }
 
-impl Client {
-    pub(crate) fn new(base_url: Url) -> eyre::Result<Self> {
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, MIME);
-
-        let client = reqwest::ClientBuilder::new()
-            .default_headers(headers)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
-
-        Ok(Self {
-            base_url,
-            protocol_version: PROTOCOL_VERSION,
-            client,
-        })
-    }
-
-    pub(crate) async fn send<T>(
-        &self,
-        msg: &T,
-        auth: Option<&HeaderValue>,
-    ) -> eyre::Result<reqwest::Response>
+impl<A> Client<A> {
+    async fn send<T>(&self, msg: &T, auth: Option<&HeaderValue>) -> eyre::Result<reqwest::Response>
     where
         T: ClientMessage,
     {
@@ -46,8 +32,9 @@ impl Client {
             T::MSG_TYPE
         ))?;
 
-        let mut buff = Vec::new();
-        ciborium::into_writer(&msg, &mut buff)?;
+        debug!(%url, "sending message");
+
+        let buff = msg.encode()?;
 
         let mut req = self.client.post(url).header(MESSAGE_TYPE, T::MSG_TYPE);
 
@@ -70,13 +57,14 @@ impl Client {
                 Ok(msg_type)
             })?;
 
+        // TODO: should check the error code
         if msg_type == ErrorMessage::MSG_TYPE {
             let bytes = response.bytes().await?;
             let bytes = std::io::Cursor::new(&bytes);
 
             let error: ErrorMessage = ciborium::from_reader(bytes)?;
 
-            return Err(eyre!("error message: {error:?}"));
+            return Err(eyre!("error message: {error}"));
         }
 
         if msg_type != T::Response::MSG_TYPE {
@@ -94,27 +82,72 @@ impl Client {
         Ok(response)
     }
 
-    pub(crate) async fn send_msg<T>(
-        &self,
-        msg: &T,
-        token: &HeaderValue,
-    ) -> eyre::Result<T::Response<'static>>
-    where
-        T: ClientMessage,
-    {
-        let resp = self.send(msg, Some(token)).await?;
-
-        Self::parse_msg(resp).await
-    }
-
     pub async fn parse_msg<T>(resp: reqwest::Response) -> eyre::Result<T>
     where
         T: Message,
     {
         let bytes = resp.bytes().await?;
 
-        let value = ciborium::from_reader(std::io::Cursor::new(bytes))?;
+        let value = T::decode(&bytes)?;
 
         Ok(value)
+    }
+}
+
+impl Client<NeedsAuth> {
+    pub(crate) fn new(base_url: Url) -> eyre::Result<Self> {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, MIME);
+
+        let client = reqwest::ClientBuilder::new()
+            .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+
+        Ok(Self {
+            base_url,
+            protocol_version: PROTOCOL_VERSION,
+            client,
+            auth: NeedsAuth {},
+        })
+    }
+
+    pub(crate) async fn init<T>(&self, msg: &T) -> eyre::Result<(T::Response<'static>, HeaderValue)>
+    where
+        T: IntialMessage,
+    {
+        let resp = self.send(msg, None).await?;
+
+        let mut auth = resp
+            .headers()
+            .get(AUTHORIZATION)
+            .ok_or_eyre("missing authorization header")?
+            .clone();
+
+        auth.set_sensitive(true);
+
+        let msg = Self::parse_msg(resp).await?;
+
+        Ok((msg, auth))
+    }
+
+    pub(crate) fn set_auth(self, auth: HeaderValue) -> Client {
+        Client {
+            auth,
+            base_url: self.base_url,
+            protocol_version: self.protocol_version,
+            client: self.client,
+        }
+    }
+}
+
+impl Client<HeaderValue> {
+    pub(crate) async fn send_msg<T>(&self, msg: &T) -> eyre::Result<T::Response<'static>>
+    where
+        T: ClientMessage,
+    {
+        let resp = self.send(msg, Some(&self.auth)).await?;
+
+        Self::parse_msg(resp).await
     }
 }

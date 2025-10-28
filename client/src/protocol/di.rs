@@ -1,10 +1,10 @@
 use coset::{CborSerializable, CoseEncrypt0};
-use eyre::OptionExt;
-use reqwest::header::{AUTHORIZATION, HeaderValue};
+use reqwest::header::HeaderValue;
 use serde_bytes::ByteBuf;
 use tracing::info;
 
-use crate::client::Client;
+use crate::Ctx;
+use crate::client::{Client, NeedsAuth};
 use crate::crypto::Crypto;
 use crate::protocol::v101::PROTOCOL_VERSION;
 use crate::protocol::v101::device_credentials::DeviceCredential;
@@ -17,52 +17,60 @@ use super::v101::di::custom::MfgInfo;
 use super::v101::di::set_credentials::SetCredentials;
 use super::v101::hash_hmac::{HMac, Hash};
 
-pub(crate) struct Di<C, S, T> {
-    client: Client,
-    crypto: C,
-    storage: S,
+pub(crate) const DEVICE_CREDS: &str = "device_creds.cbor";
+
+pub(crate) struct Di<T, A = HeaderValue> {
+    client: Client<A>,
     state: T,
 }
 
-impl<C, S> Di<C, S, ()> {
-    pub(crate) fn new(client: Client, crypto: C, storage: S) -> Self {
+impl<'a> Di<Start<'a>, NeedsAuth> {
+    pub(crate) fn new(client: Client<NeedsAuth>, device_info: MfgInfo<'a>) -> Self {
         Self {
             client,
-            crypto,
-            storage,
-            state: (),
+            state: Start {
+                device_info: AppStart::new(device_info),
+            },
         }
     }
 
-    pub(crate) async fn run<'a>(self, device_info: MfgInfo<'a>) -> eyre::Result<Di<C, S, Done>>
+    pub(crate) async fn create_credentials<C, S>(
+        self,
+        ctx: &mut Ctx<'_, C, S>,
+    ) -> eyre::Result<DeviceCredential<'static>>
     where
         C: Crypto,
         S: Storage,
     {
-        let state = Start {
-            device_info: AppStart::new(device_info),
+        if let Some(done) = Self::read_existing(ctx).await? {
+            return Ok(done);
+        }
+
+        let set_creds = self.run().await?;
+
+        let set_hmac = set_creds.run(ctx).await?;
+
+        let dc = set_hmac.run(ctx).await?;
+
+        Ok(dc)
+    }
+
+    pub(crate) async fn read_existing<C, S>(
+        ctx: &mut Ctx<'_, C, S>,
+    ) -> Result<Option<DeviceCredential<'static>>, eyre::Error>
+    where
+        S: Storage,
+    {
+        let Some(creds) = ctx.storage.read(DEVICE_CREDS).await? else {
+            return Ok(None);
         };
 
-        let init = Di::from((self, state));
+        let device_credentials: DeviceCredential =
+            ciborium::from_reader(std::io::Cursor::new(creds))?;
 
-        let set_creds = init.run().await?;
+        info!("retrieved existing device credentials");
 
-        let set_hmac = set_creds.run().await?;
-
-        let done = set_hmac.run().await?;
-
-        Ok(done)
-    }
-}
-
-impl<'a, C, S> From<(Di<C, S, ()>, Start<'a>)> for Di<C, S, Start<'a>> {
-    fn from((di, start): (Di<C, S, ()>, Start<'a>)) -> Self {
-        Self {
-            client: di.client,
-            crypto: di.crypto,
-            storage: di.storage,
-            state: start,
-        }
+        Ok(Some(device_credentials))
     }
 }
 
@@ -70,61 +78,42 @@ pub(crate) struct Start<'a> {
     device_info: AppStart<MfgInfo<'a>>,
 }
 
-impl<'a, C, S> Di<C, S, Start<'a>> {
-    async fn run(self) -> eyre::Result<Di<C, S, Credentials>>
-    where
-        C: Crypto,
-    {
-        let res = self.client.send(&self.state.device_info, None).await?;
-
-        let auth = res
-            .headers()
-            .get(AUTHORIZATION)
-            .ok_or_eyre("missing authorization header")?
-            .clone();
-
-        let set_creds = Client::parse_msg::<SetCredentials>(res).await?;
+impl<'a> Di<Start<'a>, NeedsAuth> {
+    async fn run(self) -> eyre::Result<Di<Credentials>> {
+        let (set_creds, auth) = self.client.init(&self.state.device_info).await?;
 
         info!("DI.AppStart successful");
 
-        Ok(Di::from((
-            self,
-            Credentials {
-                auth,
-                creds: set_creds,
-                buf: Vec::new(),
-            },
-        )))
-    }
-}
-
-impl<'a, C, S> From<(Di<C, S, Start<'a>>, Credentials)> for Di<C, S, Credentials> {
-    fn from((di, state): (Di<C, S, Start<'a>>, Credentials)) -> Self {
-        Self {
-            client: di.client,
-            crypto: di.crypto,
-            storage: di.storage,
-            state,
-        }
+        Ok(Di {
+            client: self.client.set_auth(auth),
+            state: Credentials::new(set_creds),
+        })
     }
 }
 
 pub(crate) struct Credentials {
-    auth: HeaderValue,
     creds: SetCredentials<'static>,
     buf: Vec<u8>,
 }
+impl Credentials {
+    fn new(set_creds: SetCredentials<'static>) -> Self {
+        Self {
+            creds: set_creds,
+            buf: Vec::new(),
+        }
+    }
+}
 
-impl<C, S> Di<C, S, Credentials> {
-    async fn run(mut self) -> eyre::Result<Di<C, S, Hmac>>
+impl Di<Credentials> {
+    async fn run<C, S>(mut self, ctx: &mut Ctx<'_, C, S>) -> eyre::Result<Di<Hmac>>
     where
         C: Crypto,
     {
-        let hash = self.owner_key_hash()?;
+        let hash = self.owner_key_hash(ctx)?;
 
-        let hmac_secret = self.crypto.hmac_secret().await?;
+        let hmac_secret = ctx.crypto.hmac_secret().await?;
 
-        let hmac = self.ov_header_hmac(&hmac_secret).await?;
+        let hmac = self.ov_header_hmac(ctx, &hmac_secret).await?;
 
         let ov_header = self.state.creds.ov_header();
 
@@ -142,10 +131,19 @@ impl<C, S> Di<C, S, Credentials> {
 
         info!("DI.SetCredentials successful");
 
-        Ok(Di::from((self, (SetHmac { hmac }, device_creds))))
+        Ok(Di {
+            client: self.client,
+            state: Hmac {
+                hmac: SetHmac { hmac },
+                device_creds: device_creds,
+            },
+        })
     }
 
-    fn owner_key_hash(&mut self) -> Result<Hash<'static>, eyre::Error>
+    fn owner_key_hash<C, S>(
+        &mut self,
+        ctx: &mut Ctx<'_, C, S>,
+    ) -> Result<Hash<'static>, eyre::Error>
     where
         C: Crypto,
     {
@@ -156,13 +154,14 @@ impl<C, S> Di<C, S, Credentials> {
             &mut self.state.buf,
         )?;
 
-        let dc_pub_key_hash = self.crypto.hash(&self.state.buf)?;
+        let dc_pub_key_hash = ctx.crypto.hash(&self.state.buf)?;
 
         Ok(dc_pub_key_hash)
     }
 
-    async fn ov_header_hmac(
+    async fn ov_header_hmac<C, S>(
         &mut self,
+        ctx: &mut Ctx<'_, C, S>,
         hmac_secret: &CoseEncrypt0,
     ) -> Result<HMac<'static>, eyre::Error>
     where
@@ -175,74 +174,34 @@ impl<C, S> Di<C, S, Credentials> {
             &mut self.state.buf,
         )?;
 
-        let hmac = self.crypto.hmac(hmac_secret, &self.state.buf).await?;
+        let hmac = ctx.crypto.hmac(hmac_secret, &self.state.buf).await?;
 
         Ok(hmac)
     }
 }
 
-impl<C, S>
-    From<(
-        Di<C, S, Credentials>,
-        (SetHmac<'static>, DeviceCredential<'static>),
-    )> for Di<C, S, Hmac>
-{
-    fn from(
-        (di, (hmac, creds)): (
-            Di<C, S, Credentials>,
-            (SetHmac<'static>, DeviceCredential<'static>),
-        ),
-    ) -> Self {
-        Self {
-            client: di.client,
-            crypto: di.crypto,
-            storage: di.storage,
-            state: Hmac {
-                auth: di.state.auth,
-                hmac,
-                device_creds: creds,
-            },
-        }
-    }
-}
-
 pub(crate) struct Hmac {
-    auth: HeaderValue,
     hmac: SetHmac<'static>,
     device_creds: DeviceCredential<'static>,
 }
 
-impl<C, S> Di<C, S, Hmac> {
-    async fn run(self) -> eyre::Result<Di<C, S, Done>>
+impl Di<Hmac> {
+    async fn run<C, S>(self, ctx: &mut Ctx<'_, C, S>) -> eyre::Result<DeviceCredential<'static>>
     where
         S: Storage,
     {
-        let Done {} = self
-            .client
-            .send_msg(&self.state.hmac, &self.state.auth)
-            .await?;
+        let Done {} = self.client.send_msg(&self.state.hmac).await?;
 
         info!("DI.SetMac sucessfully");
 
-        // TODO: store credentials
+        // TODO: separate store credentials
         let mut buf = Vec::new();
         ciborium::into_writer(&self.state.device_creds, &mut buf)?;
 
-        self.storage.write("device_creds.cbor", &buf).await?;
+        ctx.storage.write(DEVICE_CREDS, &buf).await?;
 
         info!("DI.Done sucessfully");
 
-        Ok(Di::from((self, Done)))
-    }
-}
-
-impl<C, S> From<(Di<C, S, Hmac>, Done)> for Di<C, S, Done> {
-    fn from((di, state): (Di<C, S, Hmac>, Done)) -> Self {
-        Self {
-            client: di.client,
-            crypto: di.crypto,
-            storage: di.storage,
-            state,
-        }
+        Ok(self.state.device_creds)
     }
 }

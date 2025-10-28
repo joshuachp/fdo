@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::CborBstr;
-use crate::protocol::v101::{ClientMessage, Message, Msgtype};
+use crate::protocol::v101::{ClientMessage, IntialMessage, Message, Msgtype};
 
 use super::set_credentials::SetCredentials;
 
@@ -52,6 +52,19 @@ where
     for<'a> T: Deserialize<'a>,
 {
     const MSG_TYPE: Msgtype = 10;
+
+    fn decode(buf: &[u8]) -> eyre::Result<Self> {
+        let this = ciborium::from_reader(buf)?;
+
+        Ok(this)
+    }
+
+    fn encode(&self) -> eyre::Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        ciborium::into_writer(self, &mut buf)?;
+
+        Ok(buf)
+    }
 }
 
 impl<T> ClientMessage for AppStart<T>
@@ -60,4 +73,11 @@ where
     for<'de> T: Deserialize<'de>,
 {
     type Response<'a> = SetCredentials<'a>;
+}
+
+impl<T> IntialMessage for AppStart<T>
+where
+    T: Serialize,
+    for<'de> T: Deserialize<'de>,
+{
 }

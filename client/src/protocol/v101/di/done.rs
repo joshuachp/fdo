@@ -31,4 +31,17 @@ impl<'de> Deserialize<'de> for Done {
 
 impl Message for Done {
     const MSG_TYPE: Msgtype = 13;
+
+    fn decode(buf: &[u8]) -> eyre::Result<Self> {
+        let this = ciborium::from_reader(buf)?;
+
+        Ok(this)
+    }
+
+    fn encode(&self) -> eyre::Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        ciborium::into_writer(self, &mut buf)?;
+
+        Ok(buf)
+    }
 }

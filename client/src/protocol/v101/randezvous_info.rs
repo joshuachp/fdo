@@ -1,9 +1,12 @@
+use std::borrow::Cow;
 use std::fmt::Debug;
+use std::ops::Deref;
 
 use eyre::bail;
 use serde::{Deserialize, Serialize};
+use serde_bytes::Bytes;
 
-use crate::protocol::{CborBstr, OneOrMore};
+use crate::protocol::OneOrMore;
 
 /// ```cddl
 /// RendezvousInfo = [
@@ -11,7 +14,15 @@ use crate::protocol::{CborBstr, OneOrMore};
 /// ]
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct RendezvousInfo(OneOrMore<RendezvousDirective>);
+pub(crate) struct RendezvousInfo<'a>(OneOrMore<RendezvousDirective<'a>>);
+
+impl<'a> Deref for RendezvousInfo<'a> {
+    type Target = Vec<RendezvousDirective<'a>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// ```cddl
 /// RendezvousDirective = [
@@ -19,7 +30,15 @@ pub(crate) struct RendezvousInfo(OneOrMore<RendezvousDirective>);
 /// ]
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct RendezvousDirective(OneOrMore<RendezvousInstr>);
+pub(crate) struct RendezvousDirective<'a>(OneOrMore<RendezvousInstr<'a>>);
+
+impl<'a> Deref for RendezvousDirective<'a> {
+    type Target = Vec<RendezvousInstr<'a>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// ```cddl
 /// RendezvousInstr = [
@@ -28,12 +47,12 @@ struct RendezvousDirective(OneOrMore<RendezvousInstr>);
 /// ]
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct RendezvousInstr {
-    rv_variable: RVVariable,
-    rv_value: RVValue,
+pub(crate) struct RendezvousInstr<'a> {
+    pub(crate) rv_variable: RVVariable,
+    pub(crate) rv_value: RVValue<'a>,
 }
 
-impl Serialize for RendezvousInstr {
+impl Serialize for RendezvousInstr<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -47,7 +66,7 @@ impl Serialize for RendezvousInstr {
     }
 }
 
-impl<'de> Deserialize<'de> for RendezvousInstr {
+impl<'de> Deserialize<'de> for RendezvousInstr<'_> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -161,19 +180,191 @@ impl From<RVVariable> for u8 {
     }
 }
 
-// RVProtocolValue /= (
-//     RVProtRest    => 0,
-//     RVProtHttp    => 1,
-//     RVProtHttps   => 2,
-//     RVProtTcp     => 3,
-//     RVProtTls     => 4,
-//     RVProtCoapTcp => 5,
-//     RVProtCoapUdp => 6
-// );
-// $RVMediumValue /= (
-// )
+/// ```cddl
+/// RVProtocolValue /= (
+///     RVProtRest    => 0,
+///     RVProtHttp    => 1,
+///     RVProtHttps   => 2,
+///     RVProtTcp     => 3,
+///     RVProtTls     => 4,
+///     RVProtCoapTcp => 5,
+///     RVProtCoapUdp => 6
+/// );
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u8", into = "u8")]
+#[repr(u8)]
+pub(crate) enum RvProtocolValue {
+    /// first supported protocol from:
+    ///
+    /// - RVProtHttps
+    /// - RVProtHttp
+    /// - RVProtCoapUdp
+    /// - RVProtCoapTcp
+    RvProtRest = 0,
+    /// HTTP over TCP
+    RvProtHttp = 1,
+    /// HTTP over TLS, if supported
+    RvProtHttps = 2,
+    /// bare TCP, if supported
+    RvProtTcp = 3,
+    /// bare TLS, if supported
+    RvProtTls = 4,
+    /// CoAP protocol over tcp, if supported
+    RvProtCoapTcp = 5,
+    /// CoAP protocol over UDP, if supported
+    RvProtCoapUdp = 6,
+}
+
+impl TryFrom<u8> for RvProtocolValue {
+    type Error = eyre::Report;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        let value = match value {
+            0 => RvProtocolValue::RvProtRest,
+            1 => RvProtocolValue::RvProtHttp,
+            2 => RvProtocolValue::RvProtHttps,
+            3 => RvProtocolValue::RvProtTcp,
+            4 => RvProtocolValue::RvProtTls,
+            5 => RvProtocolValue::RvProtCoapTcp,
+            6 => RvProtocolValue::RvProtCoapUdp,
+            _ => bail!("value out of range: {value}"),
+        };
+
+        Ok(value)
+    }
+}
+
+impl From<RvProtocolValue> for u8 {
+    fn from(value: RvProtocolValue) -> Self {
+        value as u8
+    }
+}
+
+/// Mapped to first through 10th wired Ethernet interfaces. These interfaces may appear with
+/// different names in a given platform.
+///
+/// ```cddl
+/// $RVMediumValue /= (
+///  RVMedEth0 => 0,
+///  RVMedEth1 => 1,
+///  RVMedEth2 => 2,
+///  RVMedEth3 => 3,
+///  RVMedEth4 => 4,
+///  RVMedEth5 => 5,
+///  RVMedEth6 => 6,
+///  RVMedEth7 => 7,
+///  RVMedEth8 => 8,
+///  RVMedEth9 => 9
+/// )
+/// ```
+///
+/// means to try as many wired interfaces as makes sense for this platform, in any order. For
+/// example, a device which has one or more wired interfaces that are configured to access the
+/// Internet (e.g., “wan0”) might use this configuration to try any of them that has Ethernet link.
+///
+/// ```cddl
+/// $RVMediumValue /= (
+///    RVMedEthAll => 20,
+/// )
+/// ```
+///
+/// mapped to first through 10th WiFi interfaces. These interfaces may appear with different names
+/// in a given platform.
+///
+/// ```cddl
+/// $RVMediumValue /= (
+///    RVMedWifi0 => 10,
+///    RVMedWifi1 => 11,
+///    RVMedWifi2 => 12,
+///    RVMedWifi3 => 13,
+///    RVMedWifi4 => 14,
+///    RVMedWifi5 => 15,
+///    RVMedWifi6 => 16,
+///    RVMedWifi7 => 17,
+///    RVMedWifi8 => 18,
+///    RVMedWifi9 => 19
+/// )
+/// ```
+///
+/// means to try as many WiFi interfaces as makes sense for this platform, in any order
+///
+/// ```cddl
+/// $RVMediumValue /= (
+///    RVMedWifiAll => 21
+/// )
+/// ```
+///
+/// Or others device dependent
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u8", into = "u8")]
+#[repr(u8)]
+pub(crate) enum RvMediumValue {
+    RvMedEth0 = 0,
+    RvMedEth1 = 1,
+    RvMedEth2 = 2,
+    RvMedEth3 = 3,
+    RvMedEth4 = 4,
+    RvMedEth5 = 5,
+    RvMedEth6 = 6,
+    RvMedEth7 = 7,
+    RvMedEth8 = 8,
+    RvMedEth9 = 9,
+    RvMedWifi0 = 10,
+    RvMedWifi1 = 11,
+    RvMedWifi2 = 12,
+    RvMedWifi3 = 13,
+    RvMedWifi4 = 14,
+    RvMedWifi5 = 15,
+    RvMedWifi6 = 16,
+    RvMedWifi7 = 17,
+    RvMedWifi8 = 18,
+    RvMedWifi9 = 19,
+    RvMedEthAll = 20,
+    RvMedWifiAll = 21,
+}
+
+impl TryFrom<u8> for RvMediumValue {
+    type Error = eyre::Report;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        let value = match value {
+            0 => RvMediumValue::RvMedEth0,
+            1 => RvMediumValue::RvMedEth1,
+            2 => RvMediumValue::RvMedEth2,
+            3 => RvMediumValue::RvMedEth3,
+            4 => RvMediumValue::RvMedEth4,
+            5 => RvMediumValue::RvMedEth5,
+            6 => RvMediumValue::RvMedEth6,
+            7 => RvMediumValue::RvMedEth7,
+            8 => RvMediumValue::RvMedEth8,
+            9 => RvMediumValue::RvMedEth9,
+            10 => RvMediumValue::RvMedWifi0,
+            11 => RvMediumValue::RvMedWifi1,
+            12 => RvMediumValue::RvMedWifi2,
+            13 => RvMediumValue::RvMedWifi3,
+            14 => RvMediumValue::RvMedWifi4,
+            15 => RvMediumValue::RvMedWifi5,
+            16 => RvMediumValue::RvMedWifi6,
+            17 => RvMediumValue::RvMedWifi7,
+            18 => RvMediumValue::RvMedWifi8,
+            19 => RvMediumValue::RvMedWifi9,
+            20 => RvMediumValue::RvMedEthAll,
+            21 => RvMediumValue::RvMedWifiAll,
+            _ => bail!("value out of range: {value}"),
+        };
+
+        Ok(value)
+    }
+}
+
+impl From<RvMediumValue> for u8 {
+    fn from(value: RvMediumValue) -> Self {
+        value as u8
+    }
+}
 
 /// ```cddl
 /// RVValue = bstr .cbor any
 /// ```
-pub(crate) type RVValue = CborBstr<ciborium::Value>;
+pub(crate) type RVValue<'a> = Cow<'a, Bytes>;

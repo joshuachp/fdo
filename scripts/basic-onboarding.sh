@@ -14,16 +14,7 @@ trap 'echo "Exit status $? at line $LINENO from: $BASH_COMMAND"' ERR
 GUID=$(./scripts/go-fdo-client.sh print --blob /tmp/fdo/cred.bin | grep -oE '[0-9a-fA-F]{32}' | head -n1)
 echo "GUID=${GUID}"
 
-voucherdir="$FDODIR"/ov/ownervoucher
-
-mkdir -p "$voucherdir"
-
-curl --fail -v "http://localhost:8038/api/v1/vouchers/${GUID}" >"$voucherdir/$GUID"
-curl --fail -X POST 'http://localhost:8043/api/v1/owner/vouchers' --data-binary "@$voucherdir/$GUID"
-
-curl --fail --location --request GET "http://localhost:8043/api/v1/to0/${GUID}"
-curl --fail --location --request GET "http://localhost:8043/api/v1/to0/${GUID}"
-curl --fail --location --request GET "http://localhost:8043/api/v1/to0/${GUID}"
+./scripts/send-to0.sh "$GUID"
 
 ./scripts/go-fdo-client.sh onboard --key ec256 --kex ECDH256 --debug --blob /tmp/fdo/cred.bin |
     tee "$FDODIR"/client-onboard.log

@@ -8,9 +8,14 @@ use zeroize::Zeroizing;
 pub(crate) trait Storage {
     type R: tokio::io::AsyncRead;
 
+    /// Writes the file and marks it as immutable.
     async fn write_immutable(&self, file: &str, content: &[u8]) -> eyre::Result<()>;
 
+    /// Creates and writes a file, errors if already exists.
     async fn write(&self, file: &str, content: &[u8]) -> eyre::Result<()>;
+
+    /// Creates and writes a file, truncates any existing one.
+    async fn overwrite(&self, file: &str, content: &[u8]) -> eyre::Result<()>;
 
     async fn read(&self, file: &str) -> eyre::Result<Option<Vec<u8>>>;
 
@@ -59,6 +64,20 @@ impl Storage for FileStorage {
         let mut file = File::options()
             .create_new(true)
             .write(true)
+            .mode(0o700)
+            .open(self.dir.join(file))
+            .await?;
+
+        file.write_all(content).await?;
+
+        Ok(())
+    }
+
+    async fn overwrite(&self, file: &str, content: &[u8]) -> eyre::Result<()> {
+        let mut file = File::options()
+            .create(true)
+            .write(true)
+            .truncate(true)
             .mode(0o700)
             .open(self.dir.join(file))
             .await?;

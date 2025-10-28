@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use aws_lc_rs::aead::{Aad, RandomizedNonceKey};
 use aws_lc_rs::rand::{SecureRandom, SystemRandom};
 use aws_lc_rs::signature::{EcdsaKeyPair, KeyPair};
+use coset::{CoseSign1, CoseSign1Builder, HeaderBuilder};
 use eyre::{OptionExt, bail, eyre};
 use rcgen::{CertificateParams, DistinguishedName, DnType};
 use serde_bytes::ByteBuf;
@@ -10,6 +11,7 @@ use zeroize::Zeroizing;
 
 use crate::protocol::v101::hash_hmac::{HMac, Hash, Hashtype};
 use crate::protocol::v101::public_key::{PkEnc, PkType};
+use crate::protocol::v101::sign_info::DeviceSgType;
 use crate::storage::Storage;
 
 use super::Crypto;
@@ -192,6 +194,10 @@ where
         PkType::Secp256R1
     }
 
+    fn sign_info_type(&self) -> DeviceSgType {
+        DeviceSgType::StSecP256R1
+    }
+
     async fn csr(&mut self, device_info: &str) -> eyre::Result<Vec<u8>> {
         // The device info for the certificate
         let mut dn = DistinguishedName::new();
@@ -240,6 +246,14 @@ where
         })
     }
 
+    async fn sign(&mut self, data: &[u8]) -> eyre::Result<Vec<u8>> {
+        let key = self.signing_key().await?;
+
+        let singature = key.sign(&self.rand, data)?;
+
+        Ok(singature.as_ref().to_vec())
+    }
+
     fn hash(&mut self, data: &[u8]) -> eyre::Result<Hash<'static>> {
         let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, data);
 
@@ -247,6 +261,43 @@ where
             hashtype: Hashtype::Sha256,
             hash: Cow::Owned(ByteBuf::from(digest.as_ref())),
         })
+    }
+
+    async fn cose_sing(&mut self, payload: Vec<u8>) -> eyre::Result<CoseSign1> {
+        let Some(bytes) = self.storage.read(PRIVATE_ECC_KEY_FILE).await? else {
+            bail!("missing private key");
+        };
+
+        let bytes = Zeroizing::new(bytes);
+
+        let key = EcdsaKeyPair::from_pkcs8(
+            &aws_lc_rs::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            &bytes,
+        )?;
+
+        let protected = HeaderBuilder::new()
+            .algorithm(coset::iana::Algorithm::ES256)
+            .build();
+
+        let eat = CoseSign1Builder::new()
+            .protected(protected)
+            .payload(payload)
+            .try_create_signature(&[], |bytes| -> eyre::Result<Vec<u8>> {
+                let sign = key.sign(&self.rand, bytes)?;
+
+                Ok(sign.as_ref().to_vec())
+            })?
+            .build();
+
+        let peer_public_key = aws_lc_rs::signature::UnparsedPublicKey::new(
+            &aws_lc_rs::signature::ECDSA_P256_SHA256_FIXED,
+            key.public_key().as_ref(),
+        );
+
+        eat.verify_signature(&[], |sign, data| peer_public_key.verify(data, sign))
+            .unwrap();
+
+        Ok(eat)
     }
 }
 
