@@ -1,7 +1,7 @@
-use coset::{CborSerializable, CoseEncrypt0};
+use coset::{CoseEncrypt0, TaggedCborSerializable};
 use reqwest::header::HeaderValue;
 use serde_bytes::ByteBuf;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::Ctx;
 use crate::client::{Client, NeedsAuth};
@@ -42,9 +42,13 @@ impl<'a> Di<Start<'a>, NeedsAuth> {
         C: Crypto,
         S: Storage,
     {
+        debug!(device_info = ?self.state.device_info);
+
         if let Some(done) = Self::read_existing(ctx).await? {
             return Ok(done);
         }
+
+        debug!("credentials not found, running device initialization");
 
         let set_creds = self.run().await?;
 
@@ -75,7 +79,7 @@ impl<'a> Di<Start<'a>, NeedsAuth> {
 }
 
 pub(crate) struct Start<'a> {
-    device_info: AppStart<MfgInfo<'a>>,
+    device_info: AppStart<'a, MfgInfo<'a>>,
 }
 
 impl<'a> Di<Start<'a>, NeedsAuth> {
@@ -93,14 +97,10 @@ impl<'a> Di<Start<'a>, NeedsAuth> {
 
 pub(crate) struct Credentials {
     creds: SetCredentials<'static>,
-    buf: Vec<u8>,
 }
 impl Credentials {
     fn new(set_creds: SetCredentials<'static>) -> Self {
-        Self {
-            creds: set_creds,
-            buf: Vec::new(),
-        }
+        Self { creds: set_creds }
     }
 }
 
@@ -115,14 +115,14 @@ impl Di<Credentials> {
 
         let hmac = self.ov_header_hmac(ctx, &hmac_secret).await?;
 
-        let ov_header = self.state.creds.ov_header();
+        let ov_header = self.state.creds.ov_header;
 
         info!(guid = %ov_header.ov_guid);
 
         let device_creds = DeviceCredential {
             dc_active: true,
             dc_prot_ver: PROTOCOL_VERSION,
-            dc_hmac_secret: std::borrow::Cow::Owned(ByteBuf::from(hmac_secret.to_vec()?)),
+            dc_hmac_secret: std::borrow::Cow::Owned(ByteBuf::from(hmac_secret.to_tagged_vec()?)),
             dc_device_info: ov_header.ov_device_info.clone(),
             dc_guid: ov_header.ov_guid,
             dc_rv_info: ov_header.ov_rv_info.clone(),
@@ -135,7 +135,7 @@ impl Di<Credentials> {
             client: self.client,
             state: Hmac {
                 hmac: SetHmac { hmac },
-                device_creds: device_creds,
+                device_creds,
             },
         })
     }
@@ -147,14 +147,13 @@ impl Di<Credentials> {
     where
         C: Crypto,
     {
-        self.state.buf.clear();
+        let mut buf = Vec::new();
 
-        ciborium::into_writer(
-            &self.state.creds.ov_header().ov_pub_key,
-            &mut self.state.buf,
-        )?;
+        ciborium::into_writer(&self.state.creds.ov_header.ov_pub_key, &mut buf)?;
 
-        let dc_pub_key_hash = ctx.crypto.hash(&self.state.buf)?;
+        let dc_pub_key_hash = ctx.crypto.hash(&buf);
+
+        debug_assert!(dc_pub_key_hash.hashtype.is_hash());
 
         Ok(dc_pub_key_hash)
     }
@@ -167,14 +166,11 @@ impl Di<Credentials> {
     where
         C: Crypto,
     {
-        self.state.buf.clear();
+        let data = self.state.creds.ov_header.bytes()?;
 
-        ciborium::into_writer(
-            &self.state.creds.ov_header().ov_pub_key,
-            &mut self.state.buf,
-        )?;
+        let hmac = ctx.crypto.hmac(hmac_secret, data).await?;
 
-        let hmac = ctx.crypto.hmac(hmac_secret, &self.state.buf).await?;
+        debug_assert!(hmac.hashtype.is_hmac());
 
         Ok(hmac)
     }

@@ -21,6 +21,15 @@ pub(crate) struct Hash<'a> {
     pub(crate) hash: Cow<'a, Bytes>,
 }
 
+impl<'a> Hash<'a> {
+    pub(crate) fn into_owned(self) -> Hash<'static> {
+        Hash {
+            hashtype: self.hashtype,
+            hash: Cow::Owned(self.hash.into_owned()),
+        }
+    }
+}
+
 impl Debug for Hash<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Hash")
@@ -75,6 +84,22 @@ pub(crate) enum Hashtype {
     Sha384 = -43,
     HmacSha256 = 5,
     HmacSha384 = 6,
+}
+
+impl Hashtype {
+    pub(crate) fn is_hmac(&self) -> bool {
+        match self {
+            Hashtype::HmacSha256 | Hashtype::HmacSha384 => true,
+            Hashtype::Sha256 | Hashtype::Sha384 => false,
+        }
+    }
+
+    pub(crate) fn is_hash(&self) -> bool {
+        match self {
+            Hashtype::Sha256 | Hashtype::Sha384 => true,
+            Hashtype::HmacSha256 | Hashtype::HmacSha384 => false,
+        }
+    }
 }
 
 impl TryFrom<i8> for Hashtype {

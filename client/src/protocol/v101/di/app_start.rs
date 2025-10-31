@@ -1,3 +1,4 @@
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::CborBstr;
@@ -6,11 +7,11 @@ use crate::protocol::v101::{ClientMessage, IntialMessage, Message, Msgtype};
 use super::set_credentials::SetCredentials;
 
 #[derive(Debug)]
-pub(crate) struct AppStart<T> {
-    device_mfg_info: CborBstr<T>,
+pub(crate) struct AppStart<'a, T> {
+    device_mfg_info: CborBstr<'a, T>,
 }
 
-impl<T> AppStart<T> {
+impl<'a, T> AppStart<'a, T> {
     pub(crate) fn new(device_mfg_info: T) -> Self {
         Self {
             device_mfg_info: CborBstr::new(device_mfg_info),
@@ -18,7 +19,7 @@ impl<T> AppStart<T> {
     }
 }
 
-impl<T> Serialize for AppStart<T>
+impl<'a, T> Serialize for AppStart<'a, T>
 where
     T: Serialize,
 {
@@ -32,9 +33,9 @@ where
     }
 }
 
-impl<'de, T> Deserialize<'de> for AppStart<T>
+impl<'a, 'de, T> Deserialize<'de> for AppStart<'a, T>
 where
-    T: Deserialize<'de>,
+    T: DeserializeOwned,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -46,10 +47,10 @@ where
     }
 }
 
-impl<T> Message for AppStart<T>
+impl<'a, T> Message for AppStart<'a, T>
 where
     T: Serialize,
-    for<'a> T: Deserialize<'a>,
+    T: DeserializeOwned,
 {
     const MSG_TYPE: Msgtype = 10;
 
@@ -67,17 +68,17 @@ where
     }
 }
 
-impl<T> ClientMessage for AppStart<T>
+impl<'a, T> ClientMessage for AppStart<'a, T>
 where
     T: Serialize,
-    for<'de> T: Deserialize<'de>,
+    T: DeserializeOwned,
 {
-    type Response<'a> = SetCredentials<'a>;
+    type Response<'b> = SetCredentials<'b>;
 }
 
-impl<T> IntialMessage for AppStart<T>
+impl<'a, T> IntialMessage for AppStart<'a, T>
 where
     T: Serialize,
-    for<'de> T: Deserialize<'de>,
+    T: DeserializeOwned,
 {
 }

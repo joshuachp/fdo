@@ -1,9 +1,11 @@
 use std::borrow::Cow;
+use std::fmt::Debug;
 
 use serde::{Deserialize, Serialize};
 use serde_bytes::{ByteBuf, Bytes};
 
 use crate::crypto::Crypto;
+use crate::protocol::Hex;
 use crate::protocol::v101::public_key::{PkEnc, PkType};
 
 /// DeviceMfgInfo is an example structure for use in DI.AppStart. The structure
@@ -27,7 +29,7 @@ use crate::protocol::v101::public_key::{PkEnc, PkType};
 ///
 /// [C client]: https://github.com/fido-device-onboard/client-sdk-fidoiot/
 /// [Java client]: https://github.com/fido-device-onboard/pri-fidoiot
-#[derive(Debug)]
+#[derive(Clone)]
 pub(crate) struct MfgInfo<'a> {
     pk_type: PkType,
     pk_enc: PkEnc,
@@ -60,6 +62,25 @@ impl<'a> MfgInfo<'a> {
     }
 }
 
+impl Debug for MfgInfo<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            pk_type,
+            pk_enc,
+            serial_no,
+            model_no,
+            cert_info,
+        } = self;
+        f.debug_struct("MfgInfo")
+            .field("pk_type", &pk_type)
+            .field("pk_enc", &pk_enc)
+            .field("serial_no", &serial_no)
+            .field("model_no", &model_no)
+            .field("cert_info", &Hex::new(cert_info))
+            .finish()
+    }
+}
+
 impl Serialize for MfgInfo<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -69,11 +90,11 @@ impl Serialize for MfgInfo<'_> {
             pk_type,
             pk_enc,
             serial_no,
-            model_no: device_info,
+            model_no,
             cert_info,
         } = self;
 
-        (pk_type, pk_enc, serial_no, device_info, cert_info).serialize(serializer)
+        (pk_type, pk_enc, serial_no, model_no, cert_info).serialize(serializer)
     }
 }
 
@@ -82,14 +103,14 @@ impl<'de> Deserialize<'de> for MfgInfo<'_> {
     where
         D: serde::Deserializer<'de>,
     {
-        let (pk_type, pk_enc, serial_no, device_info, cert_info) =
+        let (pk_type, pk_enc, serial_no, model_no, cert_info) =
             Deserialize::deserialize(deserializer)?;
 
         Ok(Self {
             pk_type,
             pk_enc,
             serial_no,
-            model_no: device_info,
+            model_no,
             cert_info,
         })
     }

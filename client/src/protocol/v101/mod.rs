@@ -13,14 +13,18 @@ pub(crate) mod device_credentials;
 pub(crate) mod eat_signature;
 pub(crate) mod error;
 pub(crate) mod hash_hmac;
+pub(crate) mod key_exchange;
 pub(crate) mod ownership_voucher;
 pub(crate) mod public_key;
 pub(crate) mod randezvous_info;
 pub(crate) mod rv_to2_addr;
+pub(crate) mod service_info;
 pub(crate) mod sign_info;
+pub(crate) mod x509;
 
 pub(crate) mod di;
 pub(crate) mod to1;
+pub(crate) mod to2;
 
 // Type names used in the specification
 pub(crate) type Protver = u16;
@@ -31,7 +35,6 @@ pub(crate) const PROTOCOL_VERSION_MAJOR: Protver = 1;
 pub(crate) const PROTOCOL_VERSION_MINOR: Protver = 1;
 pub(crate) const PROTOCOL_VERSION: Protver = PROTOCOL_VERSION_MAJOR * 100 + PROTOCOL_VERSION_MINOR;
 
-// TODO: this should not require serialize + deserialize but have it's methods to convert.
 pub(crate) trait Message: Sized {
     const MSG_TYPE: Msgtype;
 
@@ -103,7 +106,7 @@ impl From<IpAddress> for IpAddr {
             IpAddress::Ipv6(byte_array) => {
                 let bits = u128::from_be_bytes(byte_array.into_array());
 
-                IpAddr::V6(Ipv6Addr::from_bits(bits))
+                IpAddr::V6(Ipv6Addr::from_bits(bits)).to_canonical()
             }
         }
     }
@@ -142,12 +145,12 @@ pub(crate) type Port = u16;
 #[serde(try_from = "u8", into = "u8")]
 #[repr(u8)]
 pub enum TransportProtocol {
-    ProtTcp = 1,
-    ProtTls = 2,
-    ProtHttp = 3,
-    ProtCoAp = 4,
-    ProtHttps = 5,
-    ProtCoAps = 6,
+    Tcp = 1,
+    Tls = 2,
+    Http = 3,
+    CoAp = 4,
+    Https = 5,
+    CoAps = 6,
 }
 
 impl TryFrom<u8> for TransportProtocol {
@@ -155,12 +158,12 @@ impl TryFrom<u8> for TransportProtocol {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         let value = match value {
-            1 => TransportProtocol::ProtTcp,
-            2 => TransportProtocol::ProtTls,
-            3 => TransportProtocol::ProtHttp,
-            4 => TransportProtocol::ProtHttps,
-            5 => TransportProtocol::ProtCoAp,
-            6 => TransportProtocol::ProtCoAps,
+            1 => TransportProtocol::Tcp,
+            2 => TransportProtocol::Tls,
+            3 => TransportProtocol::Http,
+            4 => TransportProtocol::Https,
+            5 => TransportProtocol::CoAp,
+            6 => TransportProtocol::CoAps,
             _ => bail!("value out of range: {value}"),
         };
 
@@ -196,14 +199,20 @@ pub(crate) type NonceTo1Proof = Nonce;
 /// ```cddl
 /// NonceTO2ProveOV = Nonce
 /// ```
-pub(crate) type NonceTo2ProveOv = Nonce;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[repr(transparent)]
+pub(crate) struct NonceTo2ProveOv(pub(crate) Nonce);
 
 /// ```cddl
 /// NonceTO2ProveDv = Nonce
 /// ```
-pub(crate) type NonceTo2ProveDv = Nonce;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[repr(transparent)]
+pub(crate) struct NonceTo2ProveDv(pub(crate) Nonce);
 
 /// ```cddl
 /// NonceTO2SetupDv = Nonce
 /// ```
-pub(crate) type NonceTO2SetupDv = Nonce;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[repr(transparent)]
+pub(crate) struct NonceTo2SetupDv(pub(crate) Nonce);

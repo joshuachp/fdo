@@ -15,6 +15,14 @@ pub(crate) struct SigInfo<'a> {
     pub(crate) sg_type: DeviceSgType,
     pub(crate) info: Cow<'a, Bytes>,
 }
+impl<'a> SigInfo<'a> {
+    pub(crate) fn into_owned(self) -> SigInfo<'static> {
+        SigInfo {
+            sg_type: self.sg_type,
+            info: Cow::Owned(self.info.into_owned()),
+        }
+    }
+}
 
 impl Serialize for SigInfo<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -41,12 +49,16 @@ impl<'de> Deserialize<'de> for SigInfo<'_> {
 /// ```cddl
 /// eASigInfo = SigInfo  ;; from Device to Rendezvous/Owner
 /// ```
-pub(crate) type EASigInfo<'a> = SigInfo<'a>;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[repr(transparent)]
+pub(crate) struct EASigInfo<'a>(pub(crate) SigInfo<'a>);
 
 /// ```cddl
 /// eBSigInfo = SigInfo  ;; from Owner/Rendezvous to Device
 /// ```
-pub(crate) type EBSigInfo<'a> = SigInfo<'a>;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[repr(transparent)]
+pub(crate) struct EBSigInfo<'a>(pub(crate) SigInfo<'a>);
 
 /// DeviceSgType //= (
 ///     StSECP256R1: ES256,  ;; ECDSA secp256r1 = NIST-P-256 = prime256v1

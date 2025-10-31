@@ -4,8 +4,10 @@ use crate::protocol::OneOrMore;
 
 use super::{DnsAddress, IpAddress, Port, TransportProtocol};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct RvTo2Addr<'a>(OneOrMore<RvTo2AddrEntry<'a>>);
+/// ```cddl
+/// RVTO2Addr = [ + RVTO2AddrEntry ]  ;; (one or more RVTO2AddrEntry)
+/// ```
+pub(crate) type RvTo2Addr<'a> = OneOrMore<RvTo2AddrEntry<'a>>;
 
 /// ```cddl
 /// RVTO2AddrEntry = [
@@ -17,10 +19,10 @@ pub(crate) struct RvTo2Addr<'a>(OneOrMore<RvTo2AddrEntry<'a>>);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RvTo2AddrEntry<'a> {
-    rv_ip: Option<IpAddress>,
-    rv_dns: Option<DnsAddress<'a>>,
-    rv_port: Port,
-    rv_protocol: TransportProtocol,
+    pub(crate) rv_ip: Option<IpAddress>,
+    pub(crate) rv_dns: Option<DnsAddress<'a>>,
+    pub(crate) rv_port: Port,
+    pub(crate) rv_protocol: TransportProtocol,
 }
 
 impl Serialize for RvTo2AddrEntry<'_> {

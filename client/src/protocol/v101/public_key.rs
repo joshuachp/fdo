@@ -1,17 +1,26 @@
 use std::borrow::Cow;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 
+use coset::{AsCborValue, CoseKey};
 use eyre::bail;
+use serde::de::Visitor;
 use serde::{Deserialize, Serialize};
 use serde_bytes::Bytes;
 
-use crate::protocol::Hex;
+use super::x509::CoseX509;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct PublicKey<'a> {
-    pk_type: PkType,
-    pk_enc: PkType,
-    pk_body: Cow<'a, Bytes>,
+    pub(crate) pk_type: PkType,
+    pub(crate) pk_enc: PkEnc,
+    pk_body: PkBody<'a>,
+}
+
+impl<'a> PublicKey<'a> {
+    pub(crate) fn key(&self) -> &[u8] {
+        self.pk_body.key()
+    }
 }
 
 impl Debug for PublicKey<'_> {
@@ -25,7 +34,7 @@ impl Debug for PublicKey<'_> {
         f.debug_struct("PublicKey")
             .field("pk_type", pk_type)
             .field("pk_enc", pk_enc)
-            .field("pk_body", &Hex::new(pk_body))
+            .field("pk_body", pk_body)
             .finish()
     }
 }
@@ -50,13 +59,93 @@ impl<'de> Deserialize<'de> for PublicKey<'_> {
     where
         D: serde::Deserializer<'de>,
     {
-        let (pk_type, pk_enc, pk_body) = Deserialize::deserialize(deserializer)?;
+        #[derive(Default)]
+        struct PubKeyVisitor<'a> {
+            _marker: PhantomData<PublicKey<'a>>,
+        }
 
-        Ok(Self {
-            pk_type,
-            pk_enc,
-            pk_body,
-        })
+        impl<'de, 'a> Visitor<'de> for PubKeyVisitor<'a> {
+            type Value = PublicKey<'a>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(formatter, "expecting a PublicKey CBOR sequence")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                if let Some(len) = seq.size_hint()
+                    && len != 3
+                {
+                    return Err(A::Error::from(serde::de::Error::invalid_length(
+                        len,
+                        &"should be a sequence of 3 elements",
+                    )));
+                }
+
+                let pk_type = seq.next_element::<PkType>()?.ok_or_else(|| {
+                    serde::de::Error::invalid_length(0, &"should be a sequence of 3 elements")
+                })?;
+                let pk_enc = seq.next_element::<PkEnc>()?.ok_or_else(|| {
+                    serde::de::Error::invalid_length(1, &"should be a sequence of 3 elements")
+                })?;
+
+                let pk_body = match pk_enc {
+                    PkEnc::Crypto => {
+                        let body = seq.next_element::<Cow<'_, Bytes>>()?.ok_or_else(|| {
+                            serde::de::Error::invalid_length(
+                                2,
+                                &"should be a sequence of 3 elements",
+                            )
+                        })?;
+
+                        PkBody::Crypto(body)
+                    }
+                    PkEnc::X509 => {
+                        let body = seq.next_element::<Cow<'_, Bytes>>()?.ok_or_else(|| {
+                            serde::de::Error::invalid_length(
+                                2,
+                                &"should be a sequence of 3 elements",
+                            )
+                        })?;
+
+                        PkBody::X509(body)
+                    }
+                    PkEnc::X5Chain => {
+                        let chain = seq.next_element::<CoseX509<'_>>()?.ok_or_else(|| {
+                            serde::de::Error::invalid_length(
+                                2,
+                                &"should be a sequence of 3 elements",
+                            )
+                        })?;
+
+                        PkBody::X5Chain(chain)
+                    }
+                    PkEnc::CoseKey => {
+                        let value = seq.next_element::<ciborium::Value>()?.ok_or_else(|| {
+                            serde::de::Error::invalid_length(
+                                2,
+                                &"should be a sequence of 3 elements",
+                            )
+                        })?;
+
+                        let key = coset::CoseKey::from_cbor_value(value)
+                            .map_err(serde::de::Error::custom)?;
+
+                        PkBody::CoseKey(key)
+                    }
+                };
+
+                Ok(PublicKey {
+                    pk_type,
+                    pk_enc,
+                    pk_body,
+                })
+            }
+        }
+
+        deserializer.deserialize_seq(PubKeyVisitor::default())
     }
 }
 
@@ -86,13 +175,13 @@ impl<'de> Deserialize<'de> for PublicKey<'_> {
 pub(crate) enum PkType {
     /// RSA 2048 with restricted key/exponent (PKCS1 1.5 encoding)
     Rsa2048Restr = 1,
-    // RSA key, PKCS1, v1.5
+    /// RSA key, PKCS1, v1.5
     RsaPkcs = 5,
-    // RSA key, PSS
+    /// RSA key, PSS
     RsaPss = 6,
-    // ECDSA secp256r1 = NIST-P-256 = prime256v1
+    /// ECDSA secp256r1 = NIST-P-256 = prime256v1
     Secp256R1 = 10,
-    // ECDSA secp384r1 = NIST-P-384
+    /// ECDSA secp384r1 = NIST-P-384
     Secp384R1 = 11,
 }
 
@@ -129,7 +218,7 @@ impl From<PkType> for u8 {
 ///     COSEKEY:      3      ;; COSE key encoding
 /// )
 /// ```
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "u8", into = "u8")]
 #[repr(u8)]
 pub(crate) enum PkEnc {
@@ -162,5 +251,45 @@ impl TryFrom<u8> for PkEnc {
 impl From<PkEnc> for u8 {
     fn from(value: PkEnc) -> Self {
         value as u8
+    }
+}
+
+/// Body of a [`PublicKey`], it depends on the [`PkEnc`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PkBody<'a> {
+    /// Unsupported
+    // NOTE: not sure if correct
+    Crypto(Cow<'a, Bytes>),
+    X509(Cow<'a, Bytes>),
+    X5Chain(CoseX509<'a>),
+    CoseKey(CoseKey),
+}
+
+impl<'a> PkBody<'a> {
+    pub(crate) fn key(&self) -> &[u8] {
+        match self {
+            PkBody::X509(cow) => cow,
+            PkBody::X5Chain(chain) => chain.cert_key(),
+            PkBody::Crypto(_) | PkBody::CoseKey(_) => {
+                unimplemented!("TODO")
+            }
+        }
+    }
+}
+
+impl Serialize for PkBody<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            PkBody::Crypto(cow) | PkBody::X509(cow) => cow.serialize(serializer),
+            PkBody::X5Chain(cose_x509) => cose_x509.serialize(serializer),
+            PkBody::CoseKey(cose_key) => cose_key
+                .clone()
+                .to_cbor_value()
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer),
+        }
     }
 }

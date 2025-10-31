@@ -12,9 +12,8 @@ $CONTAINER run --rm -d \
     --user 0:0 \
     -v "$FDODIR":/tmp/fdo:z \
     go-fdo-server:latest \
-    --debug rendezvous 0.0.0.0:8041 \
-    --db /tmp/fdo/db/rendezvous.db \
-    --db-pass 'P@ssw0rd1!'
+    --log-level=debug rendezvous 0.0.0.0:8041 \
+    --db-type sqlite --db-dsn "file:/tmp/fdo/db/rendezvous.db"
 
 # Manufacturing Server
 $CONTAINER run --rm -d \
@@ -23,9 +22,8 @@ $CONTAINER run --rm -d \
     --user 0:0 \
     -v "$FDODIR":/tmp/fdo:z \
     go-fdo-server:latest \
-    --debug manufacturing 0.0.0.0:8038 \
-    --db /tmp/fdo/db/manufacturer.db \
-    --db-pass 'P@ssw0rd1!' \
+    --log-level=debug manufacturing 0.0.0.0:8038 \
+    --db-type=sqlite --db-dsn "file:/tmp/fdo/db/manufacturer.db" \
     --manufacturing-key /tmp/fdo/certs/manufacturer.key \
     --owner-cert /tmp/fdo/certs/owner.crt \
     --device-ca-cert /tmp/fdo/certs/device_ca.crt \
@@ -38,8 +36,7 @@ $CONTAINER run --rm -d \
     --user 0:0 \
     -v "$FDODIR":/tmp/fdo:z \
     go-fdo-server:latest \
-    --debug owner 0.0.0.0:8043 \
-    --db /tmp/fdo/db/owner.db \
-    --db-pass 'P@ssw0rd1!' \
+    --log-level=debug owner 0.0.0.0:8043 \
+    --db-type=sqlite --db-dsn "file:/tmp/fdo/db/owner.db" \
     --owner-key /tmp/fdo/certs/owner.key \
     --device-ca-cert /tmp/fdo/certs/device_ca.crt

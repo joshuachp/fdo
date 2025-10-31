@@ -41,8 +41,8 @@ impl Message for RvRedirect {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct To1dBlob<'a> {
-    to1d_rv: RvTo2Addr<'a>,
-    to1d_to0d_hash: Hash<'a>,
+    pub(crate) to1d_rv: RvTo2Addr<'a>,
+    pub(crate) to1d_to0d_hash: Hash<'a>,
 }
 
 impl Serialize for To1dBlob<'_> {

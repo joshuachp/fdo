@@ -1,12 +1,17 @@
 use std::borrow::Cow;
 
+use color_eyre::{Section, SectionExt};
+use coset::{AsCborValue, CoseSign1};
+use eyre::{Context, OptionExt};
 use serde::{Deserialize, Serialize};
+use serde_bytes::Bytes;
 
 use crate::protocol::CborBstr;
 
-use super::hash_hmac::HMac;
+use super::hash_hmac::{HMac, Hash};
 use super::public_key::PublicKey;
 use super::randezvous_info::RendezvousInfo;
+use super::x509::CoseX509;
 use super::{Guid, Protver};
 
 /// Ownership Voucher top level structure
@@ -23,11 +28,10 @@ use super::{Guid, Protver};
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct OwnershipVoucher<'a> {
     ov_prot_ver: Protver,
-    ov_header_tag: CborBstr<OvHeader<'a>>,
+    ov_header_tag: CborBstr<'a, OvHeader<'a>>,
     ov_header_hmac: HMac<'a>,
-    ov_dev_cert_chain: OvDevCertChainHashOrNull<'a>,
-    // TODO change
-    ov_entry_array: ciborium::Value,
+    ov_dev_cert_chain: OVDevCertChainOrNull<'a>,
+    ov_entry_array: OvEntries,
 }
 
 impl Serialize for OwnershipVoucher<'_> {
@@ -136,38 +140,151 @@ impl<'de> Deserialize<'de> for OvHeader<'_> {
     }
 }
 
-// ;; Device certificate chain
-// ;; use null for Intel® EPID.
-// OVDevCertChainOrNull     = X5CHAIN / null  ;; CBOR null for Intel® EPID device key
-// TODO: not specified
-pub(crate) type OvDevCertChainHashOrNull<'a> = Option<ciborium::Value>;
+/// ```cddl
+/// ;; Hash of Device certificate chain
+/// ;; use null for Intel® EPID
+/// OVDevCertChainHashOrNull = Hash / null       ;; CBOR null for Intel® EPID device key
+/// ```
+pub(crate) type OvDevCertChainHashOrNull<'a> = Option<Hash<'a>>;
 
-//;; Hash of Device certificate chain
-//;; use null for Intel® EPID
-//OVDevCertChainHashOrNull = Hash / null       ;; CBOR null for Intel® EPID device key
-//
-//;; Ownership voucher entries array
-//OVEntries = [ * OVEntry ]
-//
-//;; ...each entry is a COSE Sign1 object with a payload
-//OVEntry = CoseSignature
-//$COSEProtectedHeaders //= (
-//    1: OVSignType
-//)
-//$COSEPayloads /= (
-//    OVEntryPayload
-//)
-// ;; ... each payload contains the hash of the previous entry
-// ;; and the signature of the public key to verify the next signature
-// ;; (or the Owner, in the last entry).
-// OVEntryPayload = [
-//     OVEHashPrevEntry: Hash,
-//     OVEHashHdrInfo:   Hash,  ;; hash[GUID||DeviceInfo] in header
-//     OVEExtra:         null / bstr .cbor OVEExtraInfo
-//     OVEPubKey:        PublicKey
-// ]
-//
+/// ``cddl
+/// ;; Device certificate chain
+/// ;; use null for Intel® EPID.
+/// OVDevCertChainOrNull     = X5CHAIN / null  ;; CBOR null for Intel® EPID device key
+/// ```
+pub(crate) type OVDevCertChainOrNull<'a> = Option<CoseX509<'a>>;
+
+/// ```cddl
+/// ;; Ownership voucher entries array
+/// OVEntries = [ * OVEntry ]
+/// ```
+pub(crate) type OvEntries = Vec<OvEntry>;
+
+/// ```cddl
+/// ;; ...each entry is a COSE Sign1 object with a payload
+/// OVEntry = CoseSignature
+/// $COSEProtectedHeaders //= (
+///     1: OVSignType
+/// )
+/// $COSEPayloads /= (
+///    OVEntryPayload
+///)
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OvEntry {
+    pub(crate) entry: CoseSign1,
+}
+
+const SIGN_TAG: u64 = coset::iana::CborTag::CoseSign1 as u64;
+
+impl OvEntry {
+    pub(crate) fn payload(self) -> eyre::Result<(Vec<u8>, OvEntryPayload<'static>)> {
+        let payload = self
+            .entry
+            .payload
+            .ok_or_eyre("ov entry payload is missing")?;
+
+        let value: OvEntryPayload<'static> = ciborium::from_reader(payload.as_slice())
+            .wrap_err("coudldn't decode payload")
+            .with_note(|| {
+                let value: Option<ciborium::Value> = ciborium::from_reader(payload.as_slice()).ok();
+
+                format!("{:#?}", value).header("CBOR  alue")
+            })?;
+
+        Ok((payload, value))
+    }
+}
+
+impl Serialize for OvEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let value = self
+            .entry
+            .clone()
+            .to_cbor_value()
+            .map_err(serde::ser::Error::custom)?;
+
+        ciborium::tag::Required::<_, SIGN_TAG>(value).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for OvEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value =
+            ciborium::tag::Accepted::<ciborium::Value, SIGN_TAG>::deserialize(deserializer)?;
+
+        CoseSign1::from_cbor_value(value.0)
+            .map(|entry| Self { entry })
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// ```cddl
+/// ;; ... each payload contains the hash of the previous entry
+/// ;; and the signature of the public key to verify the next signature
+/// ;; (or the Owner, in the last entry).
+/// OVEntryPayload = [
+///     OVEHashPrevEntry: Hash,
+///     OVEHashHdrInfo:   Hash,  ;; hash[GUID||DeviceInfo] in header
+///     OVEExtra:         null / bstr .cbor OVEExtraInfo
+///     OVEPubKey:        PublicKey
+/// ]
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OvEntryPayload<'a> {
+    pub(crate) ov_e_hash_prev_entry: Hash<'a>,
+    pub(crate) ov_e_hash_hdr_info: Hash<'a>,
+    pub(crate) ov_e_extra: Option<CborBstr<'a, OvExtraInfo<'a>>>,
+    pub(crate) ov_e_pubkey: PublicKey<'a>,
+}
+
+impl Serialize for OvEntryPayload<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let Self {
+            ov_e_hash_prev_entry,
+            ov_e_hash_hdr_info,
+            ov_e_extra,
+            ov_e_pubkey,
+        } = self;
+
+        (
+            ov_e_hash_prev_entry,
+            ov_e_hash_hdr_info,
+            ov_e_extra,
+            ov_e_pubkey,
+        )
+            .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for OvEntryPayload<'_> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let (ov_e_hash_prev_entry, ov_e_hash_hdr_info, ov_e_extra, ov_e_pubkey) =
+            Deserialize::deserialize(deserializer)?;
+
+        Ok(Self {
+            ov_e_hash_prev_entry,
+            ov_e_hash_hdr_info,
+            ov_e_extra,
+            ov_e_pubkey,
+        })
+    }
+}
+
 // OVEExtraInfo = { * OVEExtraInfoType: bstr }
 // OVEExtraInfoType = int
 //
-// ;;OVSignType = Supporting COSE signature types
+// ;;OVSignType = Supporting COSE signature type
+type OvExtraInfo<'a> = rustc_hash::FxHashMap<i64, Cow<'a, Bytes>>;

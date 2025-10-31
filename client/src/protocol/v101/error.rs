@@ -20,14 +20,30 @@ pub(crate) struct ErrorMessage<'a> {
 }
 
 impl<'a> ErrorMessage<'a> {
+    pub(crate) fn new(
+        e_m_error_code: ErrorCode,
+        e_m_prev_msg_id: u8,
+        e_m_error_str: Cow<'a, str>,
+        e_m_error_ts: ciborium::Value,
+        e_m_error_c_i_d: Option<u64>,
+    ) -> Self {
+        Self {
+            e_m_error_code: e_m_error_code.into(),
+            e_m_prev_msg_id,
+            e_m_error_str,
+            e_m_error_ts,
+            e_m_error_c_i_d,
+        }
+    }
+
     pub(crate) fn known_code(&self) -> Option<ErrorCode> {
         let code = match self.e_m_error_code {
-            001 => ErrorCode::InvalidJwtToken,
-            002 => ErrorCode::InvalidOwnershipVoucher,
-            003 => ErrorCode::InvalidOwnerSignBody,
-            004 => ErrorCode::InvalidIpAddress,
-            005 => ErrorCode::InvalidGuid,
-            006 => ErrorCode::ResourceNotFound,
+            1 => ErrorCode::InvalidJwtToken,
+            2 => ErrorCode::InvalidOwnershipVoucher,
+            3 => ErrorCode::InvalidOwnerSignBody,
+            4 => ErrorCode::InvalidIpAddress,
+            5 => ErrorCode::InvalidGuid,
+            6 => ErrorCode::ResourceNotFound,
             100 => ErrorCode::MessageBodyError,
             101 => ErrorCode::InvalidMessageError,
             102 => ErrorCode::CredReuseError,
@@ -144,5 +160,11 @@ impl Display for ErrorCode {
             ErrorCode::CredReuseError => write!(f, "CRED_REUSE_ERROR"),
             ErrorCode::InternalServerError => write!(f, "INTERNAL_SERVER_ERROR"),
         }
+    }
+}
+
+impl From<ErrorCode> for u16 {
+    fn from(value: ErrorCode) -> Self {
+        value as u16
     }
 }

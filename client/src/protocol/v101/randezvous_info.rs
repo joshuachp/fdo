@@ -201,19 +201,19 @@ pub(crate) enum RvProtocolValue {
     /// - RVProtHttp
     /// - RVProtCoapUdp
     /// - RVProtCoapTcp
-    RvProtRest = 0,
+    Rest = 0,
     /// HTTP over TCP
-    RvProtHttp = 1,
+    Http = 1,
     /// HTTP over TLS, if supported
-    RvProtHttps = 2,
+    Https = 2,
     /// bare TCP, if supported
-    RvProtTcp = 3,
+    Tcp = 3,
     /// bare TLS, if supported
-    RvProtTls = 4,
+    Tls = 4,
     /// CoAP protocol over tcp, if supported
-    RvProtCoapTcp = 5,
+    CoapTcp = 5,
     /// CoAP protocol over UDP, if supported
-    RvProtCoapUdp = 6,
+    CoapUdp = 6,
 }
 
 impl TryFrom<u8> for RvProtocolValue {
@@ -221,13 +221,13 @@ impl TryFrom<u8> for RvProtocolValue {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         let value = match value {
-            0 => RvProtocolValue::RvProtRest,
-            1 => RvProtocolValue::RvProtHttp,
-            2 => RvProtocolValue::RvProtHttps,
-            3 => RvProtocolValue::RvProtTcp,
-            4 => RvProtocolValue::RvProtTls,
-            5 => RvProtocolValue::RvProtCoapTcp,
-            6 => RvProtocolValue::RvProtCoapUdp,
+            0 => RvProtocolValue::Rest,
+            1 => RvProtocolValue::Http,
+            2 => RvProtocolValue::Https,
+            3 => RvProtocolValue::Tcp,
+            4 => RvProtocolValue::Tls,
+            5 => RvProtocolValue::CoapTcp,
+            6 => RvProtocolValue::CoapUdp,
             _ => bail!("value out of range: {value}"),
         };
 

@@ -11,6 +11,7 @@ use self::crypto::Crypto;
 use self::crypto::tpm::TpmCrypto;
 use self::protocol::di::Di;
 use self::protocol::to1::To1;
+use self::protocol::to2::To2;
 use self::protocol::v101::di::custom::MfgInfo;
 use self::storage::{FileStorage, Storage};
 
@@ -75,7 +76,7 @@ enum Protocol {
         #[arg(long, default_value = MODEL)]
         model_no: String,
     },
-    To1 {},
+    To {},
 }
 
 impl Protocol {
@@ -109,12 +110,15 @@ impl Protocol {
 
                 info!(guid = %done.dc_guid, "device initialized");
             }
-            Protocol::To1 {} => {
+            Protocol::To {} => {
                 let Some(dc) = Di::read_existing(ctx).await? else {
                     bail!("device credentials missing, DI not yet completed");
                 };
 
-                To1::new(dc).rv_owner(ctx).await?;
+                // TODO: maybe pass a ref to dc?
+                let rv = To1::new(dc.clone()).rv_owner(ctx).await?;
+
+                To2::create(dc, rv)?.to2_change(ctx).await?;
             }
         }
 

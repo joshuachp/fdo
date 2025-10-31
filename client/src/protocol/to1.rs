@@ -2,11 +2,11 @@ use std::borrow::Cow;
 use std::net::IpAddr;
 use std::time::Duration;
 
-use color_eyre::owo_colors::OwoColorize;
-use eyre::{OptionExt, bail};
+use coset::HeaderBuilder;
+use eyre::{OptionExt, bail, eyre};
 use serde_bytes::ByteBuf;
 use tracing::{debug, error, info, warn};
-use url::Url;
+use url::{Host, Url};
 use zeroize::Zeroizing;
 
 use crate::Ctx;
@@ -24,8 +24,9 @@ use super::v101::hash_hmac::Hash;
 use super::v101::randezvous_info::{
     RVVariable, RendezvousDirective, RvMediumValue, RvProtocolValue,
 };
+use super::v101::sign_info::EASigInfo;
 use super::v101::to1::hello_rv_ack::HelloRvAck;
-use super::v101::to1::rv_redirect::{RvRedirect, To1dBlob};
+use super::v101::to1::rv_redirect::RvRedirect;
 use super::v101::{NonceTo1Proof, Port};
 
 /// From spec example
@@ -160,7 +161,7 @@ impl RvDevBuilder<'_> {
     }
 
     fn protocol(&self) -> RvProtocolValue {
-        self.protocol.unwrap_or(RvProtocolValue::RvProtTls)
+        self.protocol.unwrap_or(RvProtocolValue::Tls)
     }
 
     fn delay(&self) -> Duration {
@@ -187,7 +188,20 @@ impl RvDevBuilder<'_> {
         let mut addrs = Vec::with_capacity(2);
 
         if let Some(dns) = &self.dns {
-            let url = Url::parse(&format!("{scheme}://{dns}:{port}"))?;
+            let host = Host::Domain(dns);
+
+            let url = Url::parse(&format!("{scheme}://{host}:{port}"))?;
+
+            addrs.push(url);
+        }
+
+        if let Some(ip) = &self.ip {
+            let host: Host<String> = match ip {
+                IpAddr::V4(ipv4_addr) => Host::Ipv4(*ipv4_addr),
+                IpAddr::V6(ipv6_addr) => Host::Ipv6(*ipv6_addr),
+            };
+
+            let url = Url::parse(&format!("{scheme}://{host}:{port}"))?;
 
             addrs.push(url);
         }
@@ -254,7 +268,8 @@ impl To1<Hello> {
             delay.replace(rv.delay());
         }
 
-        todo!("nothing matched, impl retry");
+        // TODO: impl retry
+        Err(eyre!("nothing matched, should retry"))
     }
 
     async fn follow_instr<C, S>(
@@ -266,60 +281,35 @@ impl To1<Hello> {
         C: Crypto,
     {
         match rv.protocol() {
-            RvProtocolValue::RvProtRest => {
-                let urls = rv.http_urls()?;
+            RvProtocolValue::Rest => {
+                if let Some(ack) = self.http_instr(ctx, rv).await? {
+                    return Ok(Some(ack));
+                }
 
-                for url in urls {
-                    debug!("contacting rv at {url}");
-
-                    match self.http(url, ctx).await {
-                        Ok(ack) => {
-                            debug!(?ack, "ack received");
-
-                            break;
-                        }
-                        Err(err) => {
-                            error!(
-                                error = format!("{err:#}"),
-                                "failure wile contacting rv server"
-                            )
-                        }
-                    }
+                if let Some(ack) = self.https_instr(ctx, rv).await? {
+                    return Ok(Some(ack));
                 }
 
                 Ok(None)
             }
-            RvProtocolValue::RvProtHttp => {
-                let urls = rv.http_urls()?;
-
-                for url in urls {
-                    debug!("contacting rv at {url}");
-
-                    match self.http(url, ctx).await {
-                        Ok((ack, client)) => {
-                            debug!(?ack, "ack received");
-
-                            return Ok(Some(Ack {
-                                client,
-                                nonce: ack.nonce_to1_proof,
-                            }));
-                        }
-                        Err(err) => {
-                            error!(
-                                error = format!("{err:#}"),
-                                "failure wile contacting rv server"
-                            )
-                        }
-                    }
+            RvProtocolValue::Http => {
+                if let Some(ack) = self.http_instr(ctx, rv).await? {
+                    return Ok(Some(ack));
                 }
 
                 Ok(None)
             }
-            RvProtocolValue::RvProtHttps
-            | RvProtocolValue::RvProtTcp
-            | RvProtocolValue::RvProtTls
-            | RvProtocolValue::RvProtCoapTcp
-            | RvProtocolValue::RvProtCoapUdp => {
+            RvProtocolValue::Https => {
+                if let Some(ack) = self.https_instr(ctx, rv).await? {
+                    return Ok(Some(ack));
+                }
+
+                Ok(None)
+            }
+            RvProtocolValue::Tcp
+            | RvProtocolValue::Tls
+            | RvProtocolValue::CoapTcp
+            | RvProtocolValue::CoapUdp => {
                 error!("protocol not supported");
 
                 Ok(None)
@@ -327,10 +317,104 @@ impl To1<Hello> {
         }
     }
 
+    async fn http_instr<C, S>(
+        &self,
+        ctx: &mut Ctx<'_, C, S>,
+        rv: &RvDevBuilder<'_>,
+    ) -> Result<Option<Ack>, eyre::Error>
+    where
+        C: Crypto,
+    {
+        let urls = rv.http_urls()?;
+
+        for url in urls {
+            debug!(%url, "contacting rv");
+
+            match self.http(ctx, url).await {
+                Ok((ack, client)) => {
+                    debug!(?ack, "ack received");
+
+                    return Ok(Some(Ack {
+                        client,
+                        nonce: ack.nonce_to1_proof,
+                    }));
+                }
+                Err(err) => {
+                    error!(
+                        error = format!("{err:#}"),
+                        "failure wile contacting rv server"
+                    )
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn https_instr<C, S>(
+        &self,
+        ctx: &mut Ctx<'_, C, S>,
+        rv: &RvDevBuilder<'_>,
+    ) -> Result<Option<Ack>, eyre::Error>
+    where
+        C: Crypto,
+    {
+        let urls = rv.https_urls()?;
+
+        for url in urls {
+            debug!(%url, "contacting rv");
+
+            match self.https(ctx, url).await {
+                Ok((ack, client)) => {
+                    debug!(?ack, "ack received");
+
+                    return Ok(Some(Ack {
+                        client,
+                        nonce: ack.nonce_to1_proof,
+                    }));
+                }
+                Err(err) => {
+                    error!(
+                        error = format!("{err:#}"),
+                        "failure wile contacting rv server"
+                    )
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     async fn http<C, S>(
         &self,
-        url: Url,
         ctx: &mut Ctx<'_, C, S>,
+        url: Url,
+    ) -> eyre::Result<(HelloRvAck<'static>, Client)>
+    where
+        C: Crypto,
+    {
+        let client = Client::new(url)?;
+
+        let sg_type = ctx.crypto.sign_info_type();
+
+        let (ack, auth) = client
+            .init(&HelloRv {
+                guid: self.device_creds.dc_guid,
+                e_a_sig_info: EASigInfo(SigInfo {
+                    sg_type,
+                    info: std::borrow::Cow::Owned(ByteBuf::new()),
+                }),
+            })
+            .await?;
+
+        Ok((ack, client.set_auth(auth)))
+    }
+
+    // TODO: check the certificate validity following the spec
+    async fn https<C, S>(
+        &self,
+        ctx: &mut Ctx<'_, C, S>,
+        url: Url,
     ) -> eyre::Result<(HelloRvAck<'static>, Client)>
     where
         C: Crypto,
@@ -340,18 +424,14 @@ impl To1<Hello> {
         let (ack, auth) = client
             .init(&HelloRv {
                 guid: self.device_creds.dc_guid,
-                e_a_sig_info: SigInfo {
+                e_a_sig_info: EASigInfo(SigInfo {
                     sg_type: ctx.crypto.sign_info_type(),
                     info: std::borrow::Cow::Owned(ByteBuf::new()),
-                },
+                }),
             })
             .await?;
 
         Ok((ack, client.set_auth(auth)))
-    }
-
-    async fn https(&self, rv: RvDevBuilder<'_>) -> eyre::Result<()> {
-        unimplemented!()
     }
 
     async fn wait_for(&self, mut delay: Duration) -> eyre::Result<()> {
@@ -390,7 +470,7 @@ impl To1<Ack> {
         let mut guid = vec![1u8; 17];
 
         guid.get_mut(1..)
-            .ok_or_eyre("BUG: slice must be more then 1 byte")?
+            .ok_or_eyre("BUG: guid must be more then 1 byte")?
             .copy_from_slice(self.device_creds.dc_guid.as_ref());
 
         let payload = ciborium::Value::Map(vec![
@@ -401,7 +481,7 @@ impl To1<Ack> {
         let mut buf = Vec::new();
         ciborium::into_writer(&payload, &mut buf)?;
 
-        let sign = ctx.crypto.cose_sing(buf).await?;
+        let sign = ctx.crypto.cose_sing(HeaderBuilder::new(), buf).await?;
 
         info!("To1.HelloRvAck signed");
 

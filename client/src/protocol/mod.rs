@@ -1,31 +1,65 @@
+use std::borrow::Cow;
 use std::fmt::{Debug, Display};
 use std::ops::Deref;
 
+use once_cell::sync::OnceCell;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_bytes::{ByteBuf, Bytes};
+use tracing::debug;
 
 pub(crate) use self::v101 as latest;
 pub(crate) mod v101;
 
 pub(crate) mod di;
 pub(crate) mod to1;
+pub(crate) mod to2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct CborBstr<T> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CborBstr<'a, T> {
+    bytes: OnceCell<Cow<'a, Bytes>>,
     value: T,
 }
 
-impl<T> CborBstr<T> {
+impl<'a, T> CborBstr<'a, T> {
     pub(crate) fn new(value: T) -> Self {
-        Self { value }
+        Self {
+            bytes: OnceCell::default(),
+            value,
+        }
     }
 
-    pub(crate) fn value(&self) -> &T {
+    pub(crate) fn bytes(&self) -> eyre::Result<&Cow<'a, Bytes>>
+    where
+        T: Serialize,
+    {
+        let foo = self
+            .bytes
+            .get_or_try_init(|| -> eyre::Result<Cow<'a, Bytes>> {
+                debug!("initializing encoded cbor bstr");
+
+                let mut buf = Vec::new();
+
+                ciborium::into_writer(&self.value, &mut buf)?;
+
+                debug!(len = buf.len());
+
+                Ok(Cow::Owned(buf.into()))
+            })?;
+
+        Ok(foo)
+    }
+}
+
+impl<'a, T> Deref for CborBstr<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
         &self.value
     }
 }
 
-impl<T> Serialize for CborBstr<T>
+impl<'a, T> Serialize for CborBstr<'a, T>
 where
     T: Serialize,
 {
@@ -33,17 +67,15 @@ where
     where
         S: serde::Serializer,
     {
-        let mut buff = Vec::new();
+        let bytes = self.bytes().map_err(serde::ser::Error::custom)?;
 
-        ciborium::into_writer(self.value(), &mut buff).map_err(serde::ser::Error::custom)?;
-
-        Bytes::new(&buff).serialize(serializer)
+        bytes.serialize(serializer)
     }
 }
 
-impl<'de, T> Deserialize<'de> for CborBstr<T>
+impl<'a, 'de, T> Deserialize<'de> for CborBstr<'a, T>
 where
-    T: Deserialize<'de>,
+    T: DeserializeOwned,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -51,19 +83,36 @@ where
     {
         let bytes = ByteBuf::deserialize(deserializer)?;
 
-        let value: ciborium::Value = ciborium::from_reader(std::io::Cursor::new(&bytes))
-            .map_err(serde::de::Error::custom)?;
+        let value: T = ciborium::from_reader(bytes.as_slice()).map_err(serde::de::Error::custom)?;
 
-        let value = value.deserialized().map_err(serde::de::Error::custom)?;
-
-        Ok(CborBstr::new(value))
+        Ok(CborBstr {
+            value,
+            bytes: OnceCell::with_value(Cow::Owned(bytes)),
+        })
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct OneOrMore<T>(Vec<T>);
+pub(crate) type OneOrMore<T> = Repetition<1, T>;
 
-impl<T> Deref for OneOrMore<T> {
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct Repetition<const MIN: usize, T>(Vec<T>);
+
+impl<const MIN: usize, T> Repetition<MIN, T> {
+    const _ASSET: () = assert!(MIN > 0, "MIN must be greater than 0");
+
+    pub(crate) fn new(values: Vec<T>) -> Option<Self> {
+        (values.len() >= MIN).then_some(Self(values))
+    }
+
+    pub(crate) fn first(&self) -> &T {
+        debug_assert!(!self.0.is_empty());
+        // Safety: this structure must have at least MIN elements and MIN is checked at compile time
+        //         to be grater than 0
+        unsafe { self.0.get_unchecked(0) }
+    }
+}
+
+impl<const MIN: usize, T> Deref for Repetition<MIN, T> {
     type Target = Vec<T>;
 
     fn deref(&self) -> &Self::Target {
@@ -71,7 +120,7 @@ impl<T> Deref for OneOrMore<T> {
     }
 }
 
-impl<T> Serialize for OneOrMore<T>
+impl<const MIN: usize, T> Serialize for Repetition<MIN, T>
 where
     T: Serialize,
 {
@@ -83,7 +132,7 @@ where
     }
 }
 
-impl<'de, T> Deserialize<'de> for OneOrMore<T>
+impl<'de, const MIN: usize, T> Deserialize<'de> for Repetition<MIN, T>
 where
     T: Deserialize<'de>,
 {
@@ -93,11 +142,8 @@ where
     {
         let values = Vec::deserialize(deserializer)?;
 
-        if values.is_empty() {
-            return Err(serde::de::Error::invalid_length(0, &"one or more"));
-        }
-
-        Ok(Self(values))
+        Self::new(values)
+            .ok_or_else(|| serde::de::Error::invalid_length(0, &MIN.to_string().as_str()))
     }
 }
 

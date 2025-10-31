@@ -6,13 +6,7 @@ use crate::protocol::v101::{Message, Msgtype};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SetCredentials<'a> {
-    pub(crate) ov_header: CborBstr<OvHeader<'a>>,
-}
-
-impl<'a> SetCredentials<'a> {
-    pub(crate) fn ov_header(&self) -> &OvHeader<'a> {
-        &self.ov_header.value
-    }
+    pub(crate) ov_header: CborBstr<'a, OvHeader<'a>>,
 }
 
 impl Serialize for SetCredentials<'_> {
